@@ -1,0 +1,105 @@
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -2893,6 +2893,17 @@
+ 
+     async def send_typing(self, chat_id: str, metadata=None) -> None:
+         """Send a typing indicator; ``metadata`` carries platform context (Slack thread_id)."""
++
++    def get_activity_callbacks(self, source, *, session_key: str):
++        """Optional per-turn ephemeral activity sink, constructed on the agent worker thread.
++
++        Return sync callbacks named tool_start(call_id, name, args),
++        tool_complete(call_id, name, args, result), status(event_type, text), and close().
++        Callbacks must enqueue I/O without blocking; close ends unfinished activities.
++        None preserves existing presentation. Tool callbacks compose with native cards/voice;
++        status replaces routine status messages, while warnings retain normal delivery.
++        """
++        return None
+ 
+     async def stop_typing(self, chat_id: str) -> None:
+         """Stop a persistent typing indicator; override where typing runs as a loop."""
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1262,6 +1262,11 @@
+         agent.stream_delta_callback = stream_delta_cb
+         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
+         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
++        from gateway.activity_callbacks import wire_activity_callbacks
++        self._close_activity = wire_activity_callbacks(
++            agent, ctx._status_adapter, ctx.source, session_key=ctx.session_key,
++            muted=ctx.mute_notification_reply, is_current=lambda: ctx._run_still_current(),
++        )
+         agent.notice_clear_callback = None  # sends can't be retracted
+         agent.event_callback = ctx._event_callback_sync
+         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+@@ -1884,6 +1889,14 @@
+         return final_response + "\n" + "\n".join(unique_tags)
+ 
+     def run_sync(self):
++        try:
++            return self._run_sync_with_activity()
++        finally:
++            close = getattr(self, "_close_activity", None)
++            if close is not None:
++                close()
++
++    def _run_sync_with_activity(self):
+         """Executor-thread body of the turn; returns the gateway result dict.
+ 
+         The turn message lives on the shared TurnContext (``ctx.message``) so ``_run_agent_inner`` sees
+--- /dev/null
++++ b/gateway/activity_callbacks.py
+@@ -0,0 +1,53 @@
++"""Compose an opt-in adapter activity sink with the agent's existing UI callbacks."""
++
++import logging
++
++logger = logging.getLogger(__name__)
++
++
++def wire_activity_callbacks(agent, adapter, source, *, session_key, muted, is_current):
++    factory = getattr(type(adapter), "get_activity_callbacks", None)
++    if muted or not callable(factory):
++        return None
++    try:
++        callbacks = adapter.get_activity_callbacks(source, session_key=session_key)
++    except Exception:
++        logger.debug("Activity sink setup failed", exc_info=True)
++        return None
++    if not callbacks:
++        return None
++
++    def call(name, *args):
++        callback = callbacks.get(name)
++        if callback is not None:
++            try:
++                callback(*args)
++            except Exception:
++                logger.debug("Activity %s callback failed", name, exc_info=True)
++
++    def compose(previous, name):
++        def dispatch(*args):
++            try:
++                if previous is not None:
++                    previous(*args)
++            finally:
++                # Late starts from an old turn must not open new activity; its terminal
++                # callbacks still settle the matching old run, never the replacement run.
++                if name != "tool_start" or is_current():
++                    call(name, *args)
++        return dispatch
++
++    agent.tool_start_callback = compose(agent.tool_start_callback, "tool_start")
++    agent.tool_complete_callback = compose(agent.tool_complete_callback, "tool_complete")
++    previous_status = agent.status_callback
++
++    def status(event_type, text):
++        from gateway.warning_notifications import is_warning_status
++        if is_warning_status(event_type, text) or "status" not in callbacks:
++            if previous_status is not None:
++                previous_status(event_type, text)
++        elif is_current():
++            call("status", event_type, text)
++
++    agent.status_callback = status
++    return lambda: call("close")

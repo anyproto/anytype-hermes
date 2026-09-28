@@ -1,0 +1,10 @@
+name: anytype-platform
+label: Anytype
+kind: platform
+version: 0.2.0
+description: Anytype API v2 chat transport for Hermes, with native object links and attachments.
+requires_env:
+  - name: ANYTYPE_API_KEY
+    description: API key for the Anytype account used by Hermes
+    prompt: Anytype API key
+    password: true

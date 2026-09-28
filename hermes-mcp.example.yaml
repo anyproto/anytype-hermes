@@ -1,0 +1,9 @@
+# Merge this top-level section into the owning Hermes profile's config.yaml.
+# Store ANYTYPE_API_KEY in that profile's .env / secret store.
+mcp_servers:
+  anytype:
+    command: npx
+    args: ["-y", "@anyproto/anytype-mcp@2.0.1"]
+    env:
+      ANYTYPE_API_BASE_URL: "http://127.0.0.1:31009"
+      OPENAPI_MCP_HEADERS: '{"Authorization":"Bearer ${ANYTYPE_API_KEY}","Anytype-Version":"2025-11-08"}'

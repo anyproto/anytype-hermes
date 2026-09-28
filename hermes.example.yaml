@@ -1,0 +1,63 @@
+# Anytype 0.1 configuration; requires the accompanying generic Hermes patch.
+# Merge into the owning Hermes profile's config.yaml after installation.
+# Store ANYTYPE_API_KEY in that profile's .env / secret store, not here.
+# Replace every <...> placeholder. Use full space IDs.
+
+# Hermes-wide group setting: false shares a conversation within each chat.
+group_sessions_per_user: true
+
+plugins:
+  enabled: ["anytype-platform"]  # append to any plugins already enabled
+
+gateway:
+  platforms:
+    anytype:
+      enabled: true
+      # Optional home for cron deliver="anytype" and proactive notifications.
+      # Also include this chat in extra.chats below.
+      # home_channel:
+      #   platform: anytype
+      #   chat_id: "<full-space-id>/<home-chat-id>"
+      #   name: "Hermes Home"
+      extra:
+        base_url: "http://127.0.0.1:31009"
+        chats:
+          - space_id: "<full-space-id>"
+            chat_id: "<chat-id>"
+
+        # The API account is the bot; allow your OTHER account here.
+        # Use ["*"] to allow anyone in the explicitly configured chats.
+        # [] admits nobody. Names are not accepted as identity keys.
+        group_allow_from:
+          - "<operator-account-identity-or-participant-id>"
+
+        # Slash-command privileges are separate from permission to chat.
+        # Keep an explicit admin when switching group_allow_from to ["*"].
+        # An absent/empty admin list disables Hermes's slash privilege gate.
+        group_allow_admin_from:
+          - "<operator-account-identity-or-participant-id>"
+        group_user_allowed_commands: ["new", "stop", "status"]
+
+        trigger: "all"              # all | prefix
+        prefix: "!hermes"            # used only by prefix mode
+        startup_history: "skip"     # first setup only; restarts recover downtime
+        attach_object_links: true   # same-space links explicitly in final reply
+        send_read_receipts: false   # true is not supported in release 0.1
+        activity_status: true      # ephemeral thinking/tool activity through /status
+
+display:
+  platforms:
+    anytype:
+      streaming: false
+      interim_assistant_messages: false
+      tool_progress: "off"
+
+# Hermes uses mcp_servers (not the mcpServers spelling used by other hosts).
+# Version verified against the local v2 API on 2026-09-24.
+mcp_servers:
+  anytype:
+    command: npx
+    args: ["-y", "@anyproto/anytype-mcp@2.0.1"]
+    env:
+      ANYTYPE_API_BASE_URL: "http://127.0.0.1:31009"
+      OPENAPI_MCP_HEADERS: '{"Authorization":"Bearer ${ANYTYPE_API_KEY}","Anytype-Version":"2025-11-08"}'
