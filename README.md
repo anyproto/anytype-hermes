@@ -55,7 +55,7 @@ The API account is the bot: it must belong to the configured space, as must the 
 
 `group_sessions_per_user: true` separates each participant's agent context. Setting it to `false` shares a conversation within each chat and also changes group behavior for other platforms in the same profile. Tool access follows the routed Hermes profile, not the sender allowlist.
 
-In prefix mode, use `!hermes your request`. Authorized slash commands and active clarification/approval replies can bypass the prefix through standard Hermes control handling. Text formatting keeps links intact and escapes unsupported markup into readable text.
+In prefix mode, use `!hermes your request`. Authorized slash commands and active clarification/approval replies can bypass the prefix through standard Hermes control handling. Replies are sent as Markdown, which Anytype parses into inline marks (bold, italic, code, links, mentions). If Anytype rejects a chunk's markup, that chunk is resent with the markup escaped into readable text; links stay intact.
 
 ## Object workflows
 

@@ -1,4 +1,7 @@
-"""Transactional input checkpoints and immutable per-operation delivery payloads."""
+"""Transactional input checkpoints and per-operation delivery payloads.
+
+A payload changes only once: to its plain-text fallback, before that is sent.
+"""
 
 import hashlib
 import json
@@ -136,6 +139,11 @@ class Store:
         with self.db:
             self.db.execute('UPDATE deliveries SET status=?,remote_id=?,updated=? WHERE ns=? AND operation=? AND chunk=?',
                             (status, remote_id, time.time(), self.ns, operation, chunk))
+
+    def delivery_payload(self, operation, chunk, payload):
+        with self.db:
+            self.db.execute('UPDATE deliveries SET payload=?,updated=? WHERE ns=? AND operation=? AND chunk=?',
+                            (json.dumps(payload, ensure_ascii=False), time.time(), self.ns, operation, chunk))
 
     def recover_deliveries(self):
         with self.db:

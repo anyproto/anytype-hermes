@@ -11,7 +11,7 @@ import httpx
 from gateway.platforms.base import SendResult
 
 from .client import APIError, ProtocolError
-from .formatting import references, render_chunks
+from .formatting import plain, references, render_chunks
 
 
 class Sender:
@@ -54,6 +54,21 @@ class Sender:
             raise ValueError('Cannot send an empty message')
         return payloads
 
+    async def _deliver(self, target, operation, row):
+        payload = json.loads(row['payload'])
+        try:
+            return await self.client.send(target, payload, row['request_key'])
+        except APIError as error:
+            fallback = plain(payload['text'])
+            if error.status != 400 or fallback == payload['text']:
+                raise
+        # Anytype rejected the markup; resend it as literal text. Heart stores only
+        # successful idempotent results, so the key is still free. Persist first so
+        # a crash replays the fallback rather than conflicting with it.
+        payload['text'] = fallback
+        self.store.delivery_payload(operation, row['chunk'], payload)
+        return await self.client.send(target, payload, row['request_key'])
+
     async def send(self, target, content, reply_to=None, metadata=None):
         metadata = metadata or {}
         operation = metadata.get('delivery_id')
@@ -80,7 +95,7 @@ class Sender:
                         return SendResult(False, error=f'anytype_delivery_{row["status"]}:{operation}')
                     self.store.delivery_status(operation, row['chunk'], 'sending')
                     try:
-                        remote_id = await self.client.send(target, json.loads(row['payload']), row['request_key'])
+                        remote_id = await self._deliver(target, operation, row)
                     except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
                         self.store.delivery_status(operation, row['chunk'], 'pending')
                         return SendResult(False, error='Anytype ConnectError before delivery', retryable=True)

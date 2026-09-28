@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from anytype_plugin.client import Client
-from anytype_plugin.formatting import object_link
+from anytype_plugin.formatting import object_link, plain
 from anytype_plugin.sender import Sender
 from anytype_plugin.state import Store
 
@@ -103,5 +103,38 @@ async def test_partial_chunks_retry_only_unsent_with_same_key(tmp_path, settings
     again = await sender.send(settings.targets[0], content, 'in', {'delivery_id': 'op'})
     assert again.success and calls[1] == calls[2] and calls[0][0] != calls[1][0]
     assert len(calls) == 3
+    await client.close()
+    store.close()
+
+
+async def test_rejected_markup_is_resent_as_plain_text_with_same_key(tmp_path, settings):
+    calls = []
+    def handler(request):
+        calls.append((request.headers['Idempotency-Key'], json.loads(request.content)['text']))
+        if len(calls) == 1:
+            return httpx.Response(400, json={'code': 'validation_failed', 'issues': [{'path': '/text'}]})
+        return httpx.Response(201, json={'id': 'remote1'})
+    client = Client(settings.base_url, 'test', transport=httpx.MockTransport(handler))
+    store = Store(tmp_path / 'state.sqlite3', 'node|bot')
+    content = 'see <mention x> **now**'
+    result = await Sender(client, store, settings).send(settings.targets[0], content, metadata={'delivery_id': 'op'})
+    assert result.success and result.message_id == 'remote1'
+    key = calls[0][0]
+    assert calls == [(key, content), (key, plain(content))]
+    assert json.loads(store.delivery('op')[0]['payload'])['text'] == plain(content)
+    await client.close()
+    store.close()
+
+
+async def test_rejected_plain_text_fails_without_resend(tmp_path, settings):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(400, json={'code': 'validation_failed'})
+    client = Client(settings.base_url, 'test', transport=httpx.MockTransport(handler))
+    store = Store(tmp_path / 'state.sqlite3', 'node|bot')
+    result = await Sender(client, store, settings).send(settings.targets[0], 'hello', metadata={'delivery_id': 'op'})
+    assert not result.success and 'failed' in result.error
+    assert len(calls) == 1
     await client.close()
     store.close()
