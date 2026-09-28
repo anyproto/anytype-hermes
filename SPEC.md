@@ -170,7 +170,7 @@ The send path returns `SendResult` with the confirmed API message ID. Use the in
 }
 ```
 
-Convert Hermes text into the supported inline markup subset. Ordinary prose, newlines, external links, and Anytype object links must work. Unsupported Markdown must degrade to readable text. Do not advertise full Markdown/code-block rendering until verified on clients.
+Send Hermes text as Markdown: the v2 API parses the inline subset (emphasis, code, links, mentions) into marks, and ordinary prose, stray specials and unsupported block syntax read literally. Ordinary prose, newlines, external links, and Anytype object links must work. Chunk at paragraph, then line, then whitespace boundaries, never inside a link, and size every chunk so its escaped form also fits. When the API rejects a chunk's markup (HTTP 400), persist and resend that chunk with the markup escaped into readable text under the same idempotency key. Do not advertise full Markdown/code-block rendering until verified on clients.
 
 Build object links as `anytype://object?objectId=<encoded-id>&spaceId=<encoded-full-space-id>`. Escape the label separately from URL encoding. Never substitute localhost API URLs for navigable object links. Preserve explicit cross-space links, but attach only objects belonging to the chat's space.
 

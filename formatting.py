@@ -1,4 +1,4 @@
-"""Readable inline text, navigable links, and UTF-16-safe message chunks."""
+"""Markdown message chunks, their escaped plain-text fallback, and navigable links."""
 
 import re
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
@@ -6,7 +6,8 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 LIMIT = 8000
 # A label may contain escaped brackets; unescaped nested markup is plain text.
-LINK = re.compile(r'\[((?:\\.|[^\[\]\\])*)\]\(([^\s]+?)\)(?=\s|[.,!?;:]|$)')
+# A link may close inside emphasis, e.g. **[label](url)**.
+LINK = re.compile(r'\[((?:\\.|[^\[\]\\])*)\]\(([^\s]+?)\)(?=\s|[.,!?;:*_~]|$)')
 SPECIAL = re.compile(r'([\\*\[\]_<`~])')
 
 
@@ -37,59 +38,86 @@ def object_reference(url, default_space):
 
 
 def _plain_tokens(text):
-    # Escape before chunking and keep each escape pair/code point intact.
+    # Keep each escape pair/code point intact.
     for character in text:
         yield escape(character)
 
 
-def tokens(text):
+def _plain_link(label, url):
+    label = escape(re.sub(r'\\(.)', r'\1', label))
+    link = f'[{label}]({url})'
+    if utf16_len(link) > LIMIT:
+        budget = LIMIT - utf16_len(f'[]({url})') - 1
+        if budget < 1:
+            raise ValueError('A link URL exceeds the Anytype message limit')
+        pieces, used = [], 0
+        for token in _plain_tokens(re.sub(r'\\(.)', r'\1', label)):
+            if used + utf16_len(token) > budget:
+                break
+            pieces.append(token)
+            used += utf16_len(token)
+        link = f'[{"".join(pieces)}…]({url})'
+    return link
+
+
+def _pieces(text):
+    """(markdown, plain) pairs: one character each, or a whole link no chunk may split."""
     position = 0
     for match in LINK.finditer(text):
-        yield from _plain_tokens(text[position:match.start()])
+        yield from zip(text[position:match.start()], _plain_tokens(text[position:match.start()]))
         label, url = match.groups()
-        parsed = urlsplit(url)
-        if parsed.scheme in {'http', 'https', 'anytype'}:
-            label = re.sub(r'\\(.)', r'\1', label)
-            label = escape(label)
-            link = f'[{label}]({url})'
-            if utf16_len(link) > LIMIT:
-                budget = LIMIT - utf16_len(f'[]({url})') - 1
-                if budget < 1:
-                    raise ValueError('A link URL exceeds the Anytype message limit')
-                pieces, used = [], 0
-                for token in _plain_tokens(re.sub(r'\\(.)', r'\1', label)):
-                    if used + utf16_len(token) > budget:
-                        break
-                    pieces.append(token)
-                    used += utf16_len(token)
-                link = f'[{"".join(pieces)}…]({url})'
-            yield link
+        if urlsplit(url).scheme in {'http', 'https', 'anytype'}:
+            link = _plain_link(label, url)
+            written = match.group()
+            yield (written if utf16_len(written) <= LIMIT else link), link
         else:
-            yield from _plain_tokens(match.group())
+            yield from zip(match.group(), _plain_tokens(match.group()))
         position = match.end()
-    yield from _plain_tokens(text[position:])
+    yield from zip(text[position:], _plain_tokens(text[position:]))
+
+
+def _size(piece):
+    return max(utf16_len(piece[0]), utf16_len(piece[1]))
+
+
+def plain(text):
+    """The fallback for markdown Anytype rejects: markup reads literally, links stay links."""
+    return ''.join(p for _, p in _pieces(text))
+
+
+def _cut(current):
+    # Prefer a paragraph break, then a line break, in the chunk's second half;
+    # then a recent whitespace boundary, retaining all input characters.
+    chars, half = [m for m, _ in current], len(current) // 2
+    for i in range(len(chars) - 1, half, -1):
+        if chars[i] == '\n' and chars[i - 1] == '\n':
+            return i + 1
+    for i in range(len(chars) - 1, half, -1):
+        if chars[i] == '\n':
+            return i + 1
+    return next((i + 1 for i in range(len(chars) - 1, max(-1, len(chars) - 200), -1)
+                 if chars[i].isspace()), len(chars))
 
 
 def render_chunks(text, limit=LIMIT):
+    """Split markdown into messages that still fit the limit when resent as plain()."""
     result, current, units = [], [], 0
-    for token in tokens(text):
-        size = utf16_len(token)
+    for piece in _pieces(text):
+        size = _size(piece)
         if size > limit:
             raise ValueError('An indivisible link exceeds the chunk limit')
         if units + size > limit:
-            # Prefer a recent whitespace boundary, retaining all input characters.
-            cut = next((i + 1 for i in range(len(current) - 1, max(-1, len(current) - 200), -1)
-                        if current[i].isspace()), len(current))
-            result.append(''.join(current[:cut]))
+            cut = _cut(current)
+            result.append(''.join(m for m, _ in current[:cut]))
             current = current[cut:]
-            units = sum(utf16_len(x) for x in current)
+            units = sum(_size(x) for x in current)
             if units + size > limit:
-                result.append(''.join(current))
+                result.append(''.join(m for m, _ in current))
                 current, units = [], 0
-        current.append(token)
+        current.append(piece)
         units += size
     if current:
-        result.append(''.join(current))
+        result.append(''.join(m for m, _ in current))
     return [chunk for chunk in result if chunk]
 
 
