@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-import yaml
 
 from anytype_plugin.adapter import AnytypeAdapter
 from anytype_plugin.client import Client, Frame
@@ -30,7 +29,7 @@ def test_cron_home_delivery_uses_configured_chat(isolated_home, origin):
         'platform': 'anytype', 'chat_id': 'space.full/home', 'name': 'Hermes Home',
     }
     platform['extra']['chats'].append({'space_id': 'space.full', 'chat_id': 'home'})
-    (isolated_home / 'config.yaml').write_text(yaml.safe_dump({
+    (isolated_home / 'config.yaml').write_text(json.dumps({
         'plugins': {'enabled': ['anytype-platform']},
         'gateway': {'platforms': {'anytype': platform}},
     }))
@@ -156,24 +155,34 @@ async def test_merged_inputs_receive_terminal_outcomes(tmp_path):
 
 
 def test_real_plugin_discovery_and_yaml_loading(isolated_home):
-    from hermes_cli.plugins import PluginManager
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
     from gateway.config import load_gateway_config
     from gateway.platform_registry import platform_registry
+    from tools.skills_tool import skills_list, skill_view
     root = Path(__file__).resolve().parents[1]
     plugins = isolated_home / 'plugins'
     plugins.mkdir()
     (plugins / 'anytype-platform').symlink_to(root, target_is_directory=True)
-    (isolated_home / 'config.yaml').write_text(yaml.safe_dump({
+    (isolated_home / 'config.yaml').write_text(json.dumps({
         'plugins': {'enabled': ['anytype-platform']},
         'gateway': {'platforms': {'anytype': {'enabled': True, 'extra': config().extra}}},
     }))
-    manager = PluginManager()
-    manager.discover_and_load()
+    discover_plugins()
+    manager = get_plugin_manager()
     assert manager._plugins['anytype-platform'].enabled, manager._plugins['anytype-platform'].error
     entry = platform_registry.get('anytype')
     assert entry and entry.standalone_sender_fn
     loaded = load_gateway_config()
     assert loaded.platforms[Platform('anytype')].extra['chats'] == config().extra['chats']
+    listed = json.loads(skills_list())
+    skill = next(s for s in listed['skills'] if s['name'] == 'anytype-platform:anytype')
+    assert skill['description']
+    viewed = json.loads(skill_view(name=skill['name']))
+    assert viewed['success'] and viewed['name'] == skill['name']
+    skill_path = root / 'skills/anytype/SKILL.md'
+    assert Path(viewed['_source_path']).resolve() == skill_path.resolve()
+    assert skill_path.read_text() in viewed['content']
+    assert not (isolated_home / 'skills' / 'anytype' / 'SKILL.md').exists()
 
 
 def test_profile_secrets_and_home_A_B_A(tmp_path):

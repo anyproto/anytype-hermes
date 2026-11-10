@@ -4,6 +4,11 @@ An external Hermes gateway plugin for Anytype API v2. It receives HTTP SSE chat 
 
 See [validation evidence and remaining checks](docs/VALIDATION.md), [the specification](SPEC.md), and [the configuration example](hermes.example.yaml).
 
+The [setup guide](docs/SETUP.md) documents standalone onboarding and diagnostics.
+The [onboarding specification](docs/ONBOARDING_SETUP_CLI_SPEC.md) also covers the
+native CLI automation. The setup guide identifies the reviewed CLI schema/capability
+contract and documents native account/service/join/key setup and Heart HTTP MCP.
+
 ## Features
 
 - Explicit space/chat targets, account-identity or participant-ID allowlists, and anyone mode.
@@ -13,36 +18,129 @@ See [validation evidence and remaining checks](docs/VALIDATION.md), [the specifi
 - Scoped credentials and state, standard Hermes commands/approvals, and explicit-target standalone sends.
 - Local `@anyproto/anytype-mcp@2.0.1`, verified against the running API.
 - Ephemeral thinking/status labels and tool execution activity through Heart's chat `/status` route.
+- Optional multi-space discovery at startup: enroll on real mentions/replies, follow discussions
+  under objects created by the agent account, and load the parent object as context.
+
+## Multi-space chats and discussions (0.4)
+
+Requires Heart branch `go-0000-search-stream`, verified against source commit `a8f4f0887`.
+It needs both `GET /v2/spaces/{space_id}/chats/stream` and
+`POST /v2/spaces/{space_id}/search/stream`. An app still serving the older schema
+must be rebuilt/restarted with those endpoints before discovery can connect.
+
+Add this to the platform's `extra` configuration:
+
+```yaml
+discovery:
+  spaces: all
+  watch_agent_objects: true
+  response: all  # or mentions, including replies to the agent
+```
+
+`spaces: all` performs one complete paginated `GET /v2/spaces?ids=full` listing at
+gateway startup, then opens independent chat and creator-search streams in each
+accessible space. There is no recurring space-list poll. Joining a space or granting
+the key another space requires a gateway restart. Existing chat/object subscriptions
+continue streaming normally. Space failures and initial snapshots are independent;
+credential rejection suspends all spaces. Heart currently permits 16 space-chat
+and 16 search streams process-wide; more than 16 discovered spaces fails explicitly.
+
+For the previous single-space behavior, replace `spaces: all` with
+`space_id: "<full-space-id>"`. Configure only one selector. `chats` remains the
+pinned/home-channel list and may be empty in discovery mode; in single-space mode
+all pins must belong to that space. Existing configurations without `discovery`
+retain their per-chat transport and policies. Sender and admin allowlists still
+apply. A display name or literal `@Agent` is not an identity mention: use Anytype's
+actual mention UI. Replies to an agent-authored message can also enroll a chat.
+Use account identities in the allowlist across spaces: member/participant IDs
+belong to an individual space and are resolved independently.
+
+The gateway keeps a durable chat catalog and independent pinned, mention, and
+agent-created-object watch reasons. Creator search uses the current space member
+ID; no MCP creation interception is needed. Search and chat snapshots reconcile
+membership only when complete. A comment arriving before the creator result is
+retained and reconsidered. Ordinary parent edits do not create agent turns.
+
+Discussions use their actual chat ID as the delivery destination and a matching
+Hermes thread ID. Set `thread_sessions_per_user: false` at the Hermes top level for
+shared discussion history; an explicit `true` keeps participants isolated. Parent
+content is bounded and fetched when each input is admitted. Hermes can queue or
+merge inputs, so that excerpt is not guaranteed to be fresh at model execution.
+Attachment/block references remain in merged input text.
+
+Both new streams have fresh snapshots and **no resume cursor**. Recovery uses
+paginated REST history when a chat's creation-state checkpoint advances, including
+late-synced messages outside the newest-message window. It scans at most 100,000
+messages per chat; incomplete coverage stays visible as `gap_unresolved`. Recent
+history is refreshed on reconnect even without a new creation state. Older edits,
+deletions during outages, and messages deleted before retrieval cannot be guaranteed.
+Unread counters never acknowledge processing. Precommit events are verified through
+REST before admission; unresolved visibility remains durable and is retried.
+
+First setup persists a bootstrap cutoff before subscribing, using Heart's BSON
+creation-state timestamps with a one-second overlap. Older history becomes baseline;
+messages materialized at the cutoff or later remain eligible even if the process
+crashes before consuming a buffered event. The overlap can include a message from
+just before startup. Historical backfill after a chat reappears does not revive
+unchanged baseline requests. Multi-space mode retains its first activation cutoff
+for subsequently discovered spaces, so their downtime mentions can be recovered on
+restart. Messages older than initial activation remain baseline. Restarts retain
+watches and receipts, including dynamically enrolled cron destinations. A home
+channel applies to its own space; agent guidance defaults to `deliver: origin` in
+other spaces. Existing jobs explicitly targeting the home retain that destination.
+Standalone delivery rejects unwatched, unavailable, mismatched
+thread, and out-of-space destinations.
+
+This release implements transport discovery, not tenant isolation. Profiles,
+prompts, and transport routing do not restrict broader MCP, memory, shell, or
+connector access. Restricting MCP calls, memory, and outputs to individual
+collaborators' permissions remains future work; the current allowlist is preserved.
 
 Binary upload/download hooks, incremental edits, read receipts and reply-only triggers are follow-ups. Incoming attachments are supplied as object references for MCP. Existing file/image object IDs can be attached to outgoing messages.
 
 ## Hermes compatibility
 
-Version 0.2 also requires [the activity callbacks patch](patches/hermes-activity-callbacks.patch).
-It adds a generic opt-in adapter hook for the ID-bearing tool callbacks and routine status
-updates, preserving existing voice/card callbacks and warning delivery. Apply it after the
-delivery-context patch. Both patches apply to the installed Hermes commit
-`30565b2db235d48d3f1ab42bcc63645a45dd94fa`.
+For the route to reviewed catalog inclusion and an explanation of the remaining
+core dependencies, see [the plugin submission steps](docs/HERMES_PLUGIN_SUBMISSION.md).
 
-Tested with Hermes commit `aa8a33d22d27973df6591e48f38228274c8ad771` and the included [generic Hermes patch](patches/hermes-delivery-context.patch). The original `../hermes-agent` checkout remains unchanged; tests use an isolated copy in `.dev`.
+Version **0.5.1** uses Hermes's public `pre_tool_call`, `post_tool_call` and
+`post_llm_call` hooks. The old activity callback patch is no longer required or
+packaged. Native typing and routine status use the existing adapter interfaces.
 
-The patch addresses two concrete gaps in that Hermes version:
+Validated on Hermes `1ac3f97fbe0958aa2743c0c26202b20b3b4e760e` (0.21.5), with
+**only the delivery/receipt patch** applied. All 114 plugin tests pass. This is
+not yet a patch-free release: the plugin still refuses to start without the
+recovery interfaces. That dependency will be reviewed separately.
 
-1. Persist optional reply/attachment context and pass a stable delivery ID on initial and recovered sends. Opting-in adapters receive the original content and handle delivery ambiguity themselves. Existing adapters retain the recovered-message marker behavior.
-2. Preserve original input IDs across merges, debounce and steering, and report inline control completion through lifecycle hooks. Queued follow-up hooks already exist in Hermes.
+The remaining [delivery/receipt patch](patches/hermes-delivery-context-653bc4f.patch):
 
-These changes are generic and contain no Anytype-specific branches. Apply them to the Hermes checkout you will actually run before enabling the plugin. The plugin refuses to connect when the required delivery hook is missing. Check applicability first:
+1. Persists reply/attachment context and keeps the delivery ID stable across initial and recovered sends.
+2. Preserves input IDs across merges, debounce and steering, and reports inline control completion.
+
+Check applicability against the Hermes checkout you actually run:
 
 ```sh
-git -C ../hermes-agent apply --check "$PWD/patches/hermes-delivery-context.patch"
-git -C ../hermes-agent apply "$PWD/patches/hermes-delivery-context.patch"
-git -C ../hermes-agent apply --check "$PWD/patches/hermes-activity-callbacks.patch"
-git -C ../hermes-agent apply "$PWD/patches/hermes-activity-callbacks.patch"
+git -C ../hermes-agent apply --check "$PWD/patches/hermes-delivery-context-653bc4f.patch"
+git -C ../hermes-agent apply "$PWD/patches/hermes-delivery-context-653bc4f.patch"
 ```
+
+When upgrading an installation that already has the activity patch, remove that
+patch before enabling 0.5.0 to avoid duplicate activity. First verify the reverse
+patch applies; stop if it does not, and inspect the local changes:
+
+```sh
+git -C ../hermes-agent apply --reverse --check "$PWD/patches/hermes-activity-callbacks.patch"
+git -C ../hermes-agent apply --reverse "$PWD/patches/hermes-activity-callbacks.patch"
+```
+
+The obsolete patch remains in this source repository only for migration. The
+original `hermes-delivery-context.patch` targets older Hermes; see the dated
+history in [validation](docs/VALIDATION.md). Hermes upgrades require compatibility
+checks before restoring any remaining local patch.
 
 ## Install and configure
 
-1. Apply both patches above, or use a Hermes release that supplies the same tested contracts.
+1. Apply the delivery/receipt patch above, or use a Hermes release that supplies the same tested contracts.
 2. Run `python3 scripts/package.py`. Extract `dist/anytype-platform.zip` into the owning profile's `plugins` directory. The resulting directory must be `<profile-home>/plugins/anytype-platform/`, containing `plugin.yaml` and `__init__.py`.
 3. Merge [hermes.example.yaml](hermes.example.yaml) into that profile's `config.yaml`. Append `anytype-platform` to any existing `plugins.enabled` list and keep existing model/provider settings.
 4. Put `ANYTYPE_API_KEY=<your key>` in the owning profile's `.env` or secret store. Fill in full space/chat IDs and your **other account's** identity or participant ID. Use `group_allow_from: ["*"]` for anyone in those configured chats.
@@ -59,7 +157,17 @@ In prefix mode, use `!hermes your request`. Authorized slash commands and active
 
 ## Object workflows
 
-The plugin supplies stable agent guidance to save substantial research as native objects, reuse the space's types/properties, and return links from confirmed tool results. Independently useful records can be grouped into a collection. Brief replies remain in chat; explicit user preferences take precedence.
+Version 0.5.1 bundles a small [Anytype workflow skill](skills/anytype/SKILL.md),
+registered as `anytype-platform:anytype`. It covers searches, research objects,
+tasks, discussion context, object links and scheduled destinations. The gateway
+hint asks the agent to load it with `skill_view` for research, task management or Anytype object work;
+essential space and delivery rules remain in the hint. Hermes exposes the skill
+through `skills_list`; it is read-only and is not automatically added to the
+system prompt's skill index. Anytype MCP remains a separate optional connection.
+
+The skill favors one object for substantial research, related records or a
+collection when useful, and the space's existing types/properties. Brief replies
+remain in chat; explicit user preferences take precedence.
 
 ```text
 [Research report](anytype://object?objectId=OBJECT_ID&spaceId=FULL_SPACE_ID)
@@ -89,20 +197,44 @@ Use the selected profile's normal Hermes CLI option when invoking these commands
 
 Known unsent/rejected chunks can retry with their original payload/key. An uncertain send remains uncertain across restarts; a generic Hermes retry cannot turn it into a fresh POST. Review the local receipt and remote chat before resolving it. The initial operator CLI reports these cases; it does not yet provide a guided manual resolution command. Interrupted tool-bearing inputs are left to Hermes's recovery or reported as uncertain, never independently replayed by the plugin.
 
-This is not an exactly-once system. Anytype's idempotency cache is in memory, and arbitrarily old out-of-order additions can fall outside a finite history overlap. Default reconciliation checks 1,000 recent messages every five minutes and scans further when the prior boundary is outside that window. A stream `resync_required` requests a deeper scan. Unresolved coverage remains visible.
+This is not an exactly-once system. Anytype's idempotency cache is in memory. In legacy target-only mode, arbitrarily old out-of-order additions can fall outside a finite history overlap: reconciliation checks 1,000 recent messages every five minutes and scans further when the prior boundary is outside that window; a stream `resync_required` requests a deeper scan. Discovery mode uses the complete bounded REST recovery described above. Unresolved coverage remains visible.
 
 Writes are paced to one per second per client, with server 429 guidance handled by the normal delivery ledger. MCP and other processes share Anytype's server-side budget. Do not automatically delete final chat messages or attached files for cleanup.
 
-## Chat activity (0.2)
+## Chat activity (0.5)
 
 With `extra.activity_status: true` (the default), the gateway publishes to
 `POST /v2/spaces/{space_id}/chats/{chat_id}/status`. Thinking and routine status use
 text-only transient updates. Tool calls use a fresh ID for each execution, including
 retries, with `in_progress`, `complete`, or `error` and an expandable JSON result.
+The pre-tool hook runs before approval, so its label says `Preparing <tool>`;
+`in_progress` includes time spent waiting for policy/approval. Completion uses the
+actual result and terminal status, including blocked, cancelled and timed-out calls.
 Parallel calls remain separate even when they use the same tool. Labels repeat on
 every update; running calls refresh about every two seconds. Terminal updates stop
 their refresh worker, and cancelled/interrupted runs explicitly settle unfinished calls.
 `null`, `false`, zero and empty strings remain valid results.
+
+Each processing task binds the exact adapter/publisher and full space/chat target.
+Hermes carries this binding into agent and hook workers. Session/turn/request/call
+IDs correlate updates; the plugin generates globally unique execution IDs for
+Heart. Closed turns reject late callbacks. Delegated child tools, diagnostic-only
+muted turns, standalone CLI/cron calls, and calls outside an Anytype processing
+task do not publish activity into that chat; the parent delegation call is visible.
+Scheduled result delivery still uses the configured destination.
+
+Hermes's native `set_status_text` / typing refresh also uses this endpoint, even
+with `tool_progress: off`. Between tool calls, the fallback label shows elapsed
+time after 30 seconds. Timers and labels are scoped to the full space/chat key
+(including object discussions) and cleared when typing stops. Running structured
+tool calls take priority over the generic typing label.
+
+The plugin uses Hermes's low display tier, which disables permanent progress and
+long-running messages by default. Existing global display settings override tier
+defaults, so explicitly set `display.platforms.anytype.long_running_notifications:
+false` when upgrading. `live_status: full` includes native tool argument previews;
+`verb` omits those previews, and `off` leaves the generic typing fallback. Structured
+tool activity is controlled separately by `extra.activity_status`.
 
 Activity bypasses the ordinary message pacing lock; Heart's write limit and retry
 guidance still apply. A missing/unavailable status endpoint does not prevent chat
@@ -129,3 +261,13 @@ HERMES_PYTHON=/absolute/path/to/python bash scripts/run-tests.sh -j 3
 The wrapper invokes Hermes's prescribed `scripts/run_tests.sh`, including isolated homes, sanitized environment and per-file subprocesses. The local `.venv` is the default when `HERMES_PYTHON` is omitted. Source remains in this repository; `.dev`, `.venv`, `.runtime` and `dist` are excluded from version control. The package builder uses an explicit file allowlist and includes no token or runtime database.
 
 Protocol, state and sender tests use fake HTTP responses. Integration tests load the real plugin/gateway paths and cover a full chat loop plus recovery with a fresh adapter. Live second-account conversation and Desktop/mobile rendering remain release acceptance checks.
+## Guided setup and diagnostics
+
+The standalone `hermes anytype setup` command prepares and validates an Anytype
+connection before publication. It is available before an API key is configured.
+`hermes anytype doctor --json` checks the live API, grant, account, home and MCP
+independently. Existing `status` and `reconcile --deep` remain local operator tools.
+
+See [the setup guide](docs/SETUP.md) for desktop/external endpoint onboarding,
+private credential input, interrupted setup, consumer coordination and the current
+schema-checked native CLI provisioning. Setup never provisions through Hermes's platform menu.

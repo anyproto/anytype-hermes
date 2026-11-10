@@ -6,7 +6,15 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(os.environ.get('HERMES_SOURCE', ROOT / '.dev'))))
+def pytest_addoption(parser):
+    parser.addoption('--hermes-source', default=os.environ.get('HERMES_SOURCE', str(ROOT / '.dev')),
+                     help='Hermes checkout under test (survives the canonical runner environment scrub)')
+
+
+def pytest_configure(config):
+    sys.path.insert(0, str(Path(config.getoption('--hermes-source')).resolve()))
+
+
 spec = importlib.util.spec_from_file_location('anytype_plugin', ROOT / '__init__.py',
                                               submodule_search_locations=[str(ROOT)])
 plugin = importlib.util.module_from_spec(spec)

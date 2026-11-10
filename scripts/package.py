@@ -5,9 +5,12 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 root = Path(__file__).resolve().parents[1]
 files = ['plugin.yaml', '__init__.py', 'adapter.py', 'client.py', 'cli.py', 'config.py',
-         'formatting.py', 'sender.py', 'state.py', 'activity.py', 'README.md', 'SPEC.md',
+         'formatting.py', 'sender.py', 'state.py', 'activity.py', 'tool_hooks.py', 'discovery.py',
+         'onboarding.py', 'setup_store.py', 'setup_backend.py', 'diagnostics.py', 'README.md', 'SPEC.md',
          'hermes.example.yaml', 'hermes-mcp.example.yaml', 'docs/VALIDATION.md',
-         'patches/hermes-delivery-context.patch', 'patches/hermes-activity-callbacks.patch']
+         'docs/MULTICHAT_IMPLEMENTATION_PLAN.md', 'docs/MULTICHAT_RECOMMENDATION.md',
+         'docs/HERMES_PLUGIN_SUBMISSION.md', 'docs/ONBOARDING_SETUP_CLI_SPEC.md', 'docs/SETUP.md', 'skills/anytype/SKILL.md',
+         'patches/hermes-delivery-context.patch', 'patches/hermes-delivery-context-653bc4f.patch']
 output = root / 'dist' / 'anytype-platform.zip'
 output.parent.mkdir(exist_ok=True)
 with ZipFile(output, 'w', ZIP_DEFLATED) as archive:

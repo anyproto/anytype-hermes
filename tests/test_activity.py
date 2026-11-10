@@ -1,7 +1,5 @@
 import asyncio
 import json
-from types import SimpleNamespace
-from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -116,44 +114,3 @@ def test_payload_bounds_and_secret_redaction_preserve_identity_and_terminal_stat
     assert body['data']['tool_call_id'] == 'unique' and body['data']['status'] == 'complete'
     assert body['data']['result']['truncated'] is True
     assert data['api_key'] == data['Authorization'] == data['nested']['password'] == '[redacted]'
-
-
-async def test_real_gateway_callback_wiring_composes_and_routes_without_text_progress():
-    from gateway.run_turn_runner import TurnRunner
-    from gateway.turn_context import TurnContext
-    from anytype_plugin.adapter import AnytypeAdapter
-    from gateway.config import PlatformConfig, Platform
-    sent, native = [], Mock()
-    p = publisher(lambda request: (sent.append(json.loads(request.content)) or httpx.Response(200, json={})))
-    adapter = AnytypeAdapter(PlatformConfig(enabled=True, extra={'chats': [{'space_id': 'space', 'chat_id': 'chat'}]}))
-    adapter.activity = p
-    source = SimpleNamespace(chat_id='space/chat', platform=Platform('anytype'))
-    previous_status = Mock()
-    ctx = TurnContext(source=source, session_key='session', user_config={}, _status_adapter=adapter,
-                      _run_still_current=lambda: True, _hooks_ref=SimpleNamespace(loaded_hooks=[]),
-                      _status_callback_sync=previous_status, _voice_ack_guild=['voice'], voice_ack_callback=native)
-    runner = TurnRunner(SimpleNamespace(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda key: []), ctx)
-    runner._make_bg_review_callbacks = lambda: (None, None)
-    runner._attach_session_title_callback = lambda agent, ctx: None
-    agent = SimpleNamespace()
-    runner._wire_turn_agent_callbacks(agent, {}, None, None, None, False)
-    await asyncio.to_thread(agent.tool_start_callback, 'id', 'lookup', {'query': 'test'})
-    native.assert_called_once_with('id', 'lookup', {'query': 'test'})
-    await eventually(lambda: sent)
-    await asyncio.to_thread(agent.tool_complete_callback, 'id', 'lookup', {}, {'matches': 1})
-    agent.status_callback('lifecycle', 'Preparing the answer')
-    agent.status_callback('warn', 'A warning')
-    previous_status.assert_called_once_with('warn', 'A warning')
-    runner._close_activity()
-    await eventually(lambda: any(x.get('data', {}).get('status') == 'complete' for x in sent))
-    await p.close(); await p.client.close()
-
-
-def test_turn_runner_closes_activity_on_exception():
-    from gateway.run_turn_runner import TurnRunner
-    runner = TurnRunner(None, SimpleNamespace())
-    runner._close_activity = Mock()
-    runner._run_sync_with_activity = Mock(side_effect=RuntimeError('interrupted'))
-    with pytest.raises(RuntimeError, match='interrupted'):
-        runner.run_sync()
-    runner._close_activity.assert_called_once()

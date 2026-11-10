@@ -80,11 +80,7 @@ class ActivityRun:
         self._calls = {}
         self._closed = False
 
-    def callbacks(self):
-        return {'tool_start': self.start, 'tool_complete': self.complete,
-                'status': self.status, 'close': self.close}
-
-    def start(self, call_id, name, args):
+    def start(self, call_id, name, args, *, label=None):
         with self._lock:
             if self._closed:
                 return
@@ -95,9 +91,9 @@ class ActivityRun:
                                       'error', 'Execution superseded by another start')
             execution = f'run_{self.id}_call_{uuid.uuid4().hex}'
             self._calls[key] = (execution, False)
-            self.publisher.submit(self.target, self.id, execution, str(name), args, 'in_progress')
+            self.publisher.submit(self.target, self.id, execution, str(name), args, 'in_progress', label=label)
 
-    def complete(self, call_id, name, args, result):
+    def complete(self, call_id, name, args, result, *, status=None):
         with self._lock:
             if self._closed:
                 return
@@ -109,6 +105,7 @@ class ActivityRun:
             self._calls[key] = (execution, True)
             from agent.display import _detect_tool_failure
             failed, _ = _detect_tool_failure(str(name), result)
+            failed = failed or status in {'error', 'failed', 'blocked', 'cancelled', 'timeout'}
             parsed = result
             if isinstance(parsed, str):
                 try:
@@ -121,12 +118,6 @@ class ActivityRun:
                                     or parsed.get('status') in {'error', 'failed'})
             self.publisher.submit(self.target, self.id, execution, str(name), args,
                                   'error' if failed else 'complete', result)
-
-    def status(self, event_type, text):
-        with self._lock:
-            if not self._closed:
-                self.publisher.loop.call_soon_threadsafe(
-                    self.publisher.set_text, self.target, clean(str(text), self.publisher.secrets))
 
     def close(self):
         with self._lock:
@@ -145,13 +136,14 @@ class ActivityPublisher:
         self.loop = asyncio.get_running_loop()
         self.interval, self.terminal_retry_seconds = interval, terminal_retry_seconds
         self.calls, self.tasks, self.labels = {}, set(), {}
+        self.typing_started = {}
         self.closed = False
         self.unavailable_until = 0.0
 
     def run(self, target):
         return ActivityRun(self, target)
 
-    def submit(self, target, run_id, execution, name, args, status, result=_MISSING):
+    def submit(self, target, run_id, execution, name, args, status, result=_MISSING, *, label=None):
         args = clean(args if isinstance(args, dict) else {}, self.secrets)
         data = {k: v for k, v in args.items() if k not in {'tool_call_id', 'tool_name', 'status', 'result'}}
         data.update(tool_call_id=execution, tool_name=name, status=status)
@@ -163,7 +155,7 @@ class ActivityPublisher:
                     pass
             data['result'] = clean(result, self.secrets)
         from agent.display import build_status_phrase
-        label = build_status_phrase(name, args) or f'Running {name}'
+        label = label or build_status_phrase(name, args) or f'Running {name}'
         if status != 'in_progress':
             label = f'{name}: {"complete" if status == "complete" else "failed"}'
         payload = bounded_payload(clean(label, self.secrets), data)
@@ -189,18 +181,30 @@ class ActivityPublisher:
 
     def set_text(self, target, text):
         if not self.closed:
-            self.labels[target.key] = bounded_payload(text)['text']
+            self.labels[target.key] = bounded_payload(clean(text, self.secrets))['text']
             task = asyncio.create_task(self._post(target, bounded_payload(self.labels[target.key])))
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
 
-    async def typing(self, target):
-        if self.closed or any(c.target == target and c.terminal_at is None for c in self.calls.values()):
+    async def typing(self, target, text=None):
+        if self.closed:
             return
-        await self._post(target, bounded_payload(self.labels.get(target.key, 'Thinking about the next step')))
+        started = self.typing_started.setdefault(target.key, time.monotonic())
+        # Tool executions already refresh their own structured rows. A second generic
+        # status would compete with them for the chat's activity label.
+        if any(c.target == target and c.terminal_at is None for c in self.calls.values()):
+            return
+        label = text or self.labels.get(target.key)
+        if not label:
+            elapsed = int(time.monotonic() - started)
+            minutes, seconds = divmod(elapsed, 60)
+            label = ('Thinking about the next step' if elapsed < 30
+                     else f'Working — {minutes}m{seconds:02d}s')
+        await self._post(target, bounded_payload(clean(label, self.secrets)))
 
     def stop_typing(self, target):
         self.labels.pop(target.key, None)
+        self.typing_started.pop(target.key, None)
         # Blank text means Typing. Stop refreshing and let the transient label expire.
 
     async def _post(self, target, payload):

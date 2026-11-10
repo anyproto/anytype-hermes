@@ -1,10 +1,12 @@
-# Anytype 0.1 configuration; requires the accompanying generic Hermes patch.
+# Anytype 0.4 configuration; requires the accompanying generic Hermes patches.
 # Merge into the owning Hermes profile's config.yaml after installation.
 # Store ANYTYPE_API_KEY in that profile's .env / secret store, not here.
 # Replace every <...> placeholder. Use full space IDs.
 
 # Hermes-wide group setting: false shares a conversation within each chat.
 group_sessions_per_user: true
+# Discussions use Hermes thread sessions. False shares them across participants.
+thread_sessions_per_user: false
 
 plugins:
   enabled: ["anytype-platform"]  # append to any plugins already enabled
@@ -21,12 +23,25 @@ gateway:
       #   name: "Hermes Home"
       extra:
         base_url: "http://127.0.0.1:31009"
+        # Optional profile secret selector. Missing explicit references fail closed.
+        # Setup stages fresh ANYTYPE_API_KEY_SETUP_<id> names before publication.
+        api_key_env: "ANYTYPE_API_KEY"
+        # Optional. Requires Heart go-0000-search-stream (both subscription routes).
+        # List accessible spaces once at startup. Restart after joining/granting another space.
+        discovery:
+          spaces: "all"
+          # Or replace spaces: all with space_id: "<full-space-id>" for one space.
+          watch_agent_objects: true
+          response: "all"  # all | mentions (includes replies to the agent)
+        # Pinned chats; this list may be empty when discovery is configured.
         chats:
           - space_id: "<full-space-id>"
             chat_id: "<chat-id>"
 
         # The API account is the bot; allow your OTHER account here.
-        # Use ["*"] to allow anyone in the explicitly configured chats.
+        # Use an account identity to recognize the same person in every space.
+        # Participant IDs apply only in the space that issued them.
+        # Use ["*"] to allow anyone in pinned or dynamically enrolled chats.
         # [] admits nobody. Names are not accepted as identity keys.
         group_allow_from:
           - "<operator-account-identity-or-participant-id>"
@@ -51,6 +66,8 @@ display:
       streaming: false
       interim_assistant_messages: false
       tool_progress: "off"
+      long_running_notifications: false  # native /status replaces Working chat messages
+      live_status: "full"                # full | verb | off; independent of tool_progress
 
 # Hermes uses mcp_servers (not the mcpServers spelling used by other hosts).
 # Version verified against the local v2 API on 2026-09-24.

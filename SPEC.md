@@ -1,6 +1,83 @@
 # Anytype gateway for Hermes — implementation specification
 
-Version: 0.2 · 2026-09-25 · Status: chat activity implemented; see validation record for live checks
+Version: 0.5.1 · 2026-10-09 · Status: validated against Hermes 1ac3f97f
+
+## 0.5.1 addendum: bundled workflow skill
+
+Register `skills/anytype/SKILL.md` through `ctx.register_skill` as
+`anytype-platform:anytype` and include it in the release archive. The platform
+hint asks the agent to load it for research, task management or Anytype object work; retain essential space
+and delivery rules in the hint. The read-only skill provides compact guidance
+for MCP searches, research, tasks, parent context, links and scheduled jobs.
+It does not configure MCP or automatically enter the system prompt skill index.
+
+## 0.5 addendum: public tool hooks
+
+Replace the generic activity callback patch with plugin registrations for
+`pre_tool_call`, `post_tool_call`, and `post_llm_call`. Bind the publisher and
+full space/chat target in the adapter's processing-start hook using a ContextVar;
+Hermes copies it into agent and plugin workers. Hook callbacks only enqueue
+observer work and return None; they never modify arguments, policy, or results.
+
+Correlate by session/turn plus model request/call identity, generating fresh Heart
+IDs per execution. Pre-tool labels say `Preparing <tool>` because approval and
+policy checks may still be pending. Respect terminal outcomes including blocked,
+cancelled and timeout, even without a start. Close unfinished rows on the final
+turn hook and processing completion; reject late updates from closed bindings.
+Exclude delegated child tools, muted diagnostic turns and unrelated CLI/cron work.
+
+Route routine callbacks through the optional `send_or_update_status` adapter sink;
+warnings use normal message delivery. Native typing stays unchanged. The release
+package contains no activity patch. The delivery/receipt patch remains required
+pending a separate recovery review; this version does not claim stock-Hermes support.
+
+## 0.4.1 addendum: native status instead of Working messages
+
+Advertise Hermes's `supports_status_text` capability and consume its per-chat
+`set_status_text` value through the existing typing refresh and Heart `/status`
+publisher. Use a monotonic elapsed timer per full space/chat key; show elapsed
+time in the fallback label after 30 seconds and reset it when typing ends.
+Running structured tool executions retain priority and explicit terminal updates.
+Native text is redacted and bounded through the same activity publisher.
+
+Register the low display tier and explicitly configure
+`display.platforms.anytype.long_running_notifications: false` in deployments with
+global display overrides. This disables Hermes's separate 180-second message
+timer. Native status remains independent of ordinary tool-progress messages.
+No text matching in `send()` and no additional Hermes core patch are required.
+
+## 0.4 addendum: discover accessible spaces at startup
+
+`extra.discovery.spaces: all` lists all accessible spaces once per gateway connect,
+using full IDs and complete pagination. Each space has its own member mapping,
+snapshot readiness, chat/search subscriptions, recovery, and suspension. New grants
+and spaces are picked up on restart; there is no periodic space-list poll or global
+stream dependency. The existing `space_id` selector remains supported.
+
+Preserve the account allowlist, pinned chats, home, and receipt namespaces. Scope
+targets/sessions by full space plus chat IDs. Use origin delivery by default for
+jobs outside the configured home's space. This adds transport coverage, not
+per-collaborator restrictions on MCP, memory, or cross-space output. Current Heart
+limits cap this mode at 16 spaces. See README for bootstrap and recovery semantics.
+
+## 0.3 addendum: single-space multi-chat discovery
+
+The optional `extra.discovery.space_id` enables Heart's space-wide chat stream
+and creator-filtered search stream from `go-0000-search-stream`. The branch's
+implemented contract supersedes earlier proposals for structured mention fields
+and global resume cursors: parse canonical mention markup, reconcile complete
+snapshots, and recover additions through bounded paginated REST history using
+per-message creation `state_id` checkpoints. Never acknowledge counter snapshots.
+
+Persist independent pinned, mention, and creator-based watches. Preserve the
+first comment across search/chat ordering, revalidate precommit messages through
+REST, and supply bounded parent context at admission. Discussion sessions use
+Hermes thread settings; sends use the actual discussion chat ID and validated
+matching thread metadata. The existing text, attachment, status, and durable
+delivery contracts below remain in force. Automatic multi-space discovery and
+worker isolation are not included. See [README.md](README.md) for configuration
+and recovery limits, and [the implementation plan](docs/MULTICHAT_IMPLEMENTATION_PLAN.md)
+for the reviewed design and checks.
 
 ## 0.2 addendum: ephemeral chat activity
 

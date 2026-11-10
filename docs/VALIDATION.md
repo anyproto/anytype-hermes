@@ -1,5 +1,174 @@
 # Validation record
 
+## Bundled workflow skill — 2026-10-09
+
+Version 0.5.1 passes **114 plugin tests** on the same isolated Hermes `1ac3f97f`
+baseline with the unchanged recovery patch. The discovery integration test now
+loads the plugin through Hermes's real loader, lists `anytype-platform:anytype`,
+and reads its bundled content through `skill_view`. No copy is installed in the
+profile's mutable skills directory.
+
+Four independent reviews covered compactness/clarity, practical workflow
+balance, scope/authority and Hermes integration/packaging. The compactness review
+identified a trigger gap: object-only loading could miss substantial research.
+The gateway hint now explicitly includes research and task management. The
+reviewer confirmed the fix; no actionable findings remain. The skill is 287
+words, with concise guidance on MCP, object reuse, discussion context, tasks,
+links, partial failures and job destinations. Model adherence remains a live
+conversation acceptance check. No core changes were made for this update.
+
+## Public tool hooks — 2026-10-09
+
+Version 0.5.0 passes **114 plugin tests** and **113 selected Hermes gateway tests**
+on an isolated `1ac3f97fbe0958aa2743c0c26202b20b3b4e760e` checkout containing only
+the unchanged delivery/receipt patch. The activity callback patch is absent.
+Both suites ran through Hermes's canonical test runner.
+
+Fifteen hook/status tests replace the two bridge-specific tests. They exercise
+real adapter processing, the Hermes executor and plugin hook dispatch, concurrent
+spaces/discussions/profile managers, terminal-only results, falsy JSON values,
+blocked/cancelled/timeout outcomes, observer failure without policy interference,
+request-ID reuse, stale callbacks, processing cancellation, delegated/muted/cron
+exclusion, and routine status versus warning delivery. Existing native typing,
+transport, discovery, sender and recovery tests also pass.
+
+The runtime package declares `pre_tool_call`, `post_tool_call`, `post_llm_call`
+and excludes the obsolete activity patch. The remaining recovery patch has not
+been redesigned or removed. Stock-Hermes release compatibility still needs that
+separate review and implementation. No synthetic live chat activity is required
+for this test suite; actual client rendering remains a live acceptance check.
+
+## Native status — 2026-10-09
+
+Version 0.4.1 passes **101 plugin tests** against the existing patched Hermes
+`1ac3f97f` baseline. Three new regressions exercise the real Hermes progress
+callback with its message queue disabled, identical chat IDs across spaces,
+discussion status routing, secret redaction, independent elapsed timers and
+reset, structured tool priority and explicit completion, and the native typing
+loop's cleanup. Regular replies still use the normal sender. No new Hermes core
+changes are required. See [local deployment](LOCAL_SETUP.md) for installation status.
+
+## Startup multi-space discovery — 2026-10-07
+
+Version 0.4.0 lists all accessible spaces once at startup and runs independent
+watchers for that fixed set. **98 plugin tests pass** on the patched Hermes
+`1ac3f97fbe0958aa2743c0c26202b20b3b4e760e` baseline. The eight added multi-space
+cases cover complete startup pagination, isolated readiness, per-space participant
+identities, identical chat/message IDs in different spaces, parent context and
+replies, stream cancellation, per-space failures versus credential revocation,
+member initialization retry, restart discovery/removal, new-space downtime
+mentions, standalone destinations, stream capacity, and origin scheduling guidance.
+The existing 90 tests continue to pass. No additional Hermes core changes are needed.
+
+A read-only preflight found four accessible spaces behind one agent account and
+an all-spaces API grant, within Heart's current 16-space stream limit. Installed
+with `discovery.spaces: all`, retaining the sender/admin policy, pinned chats, home,
+MCP, and existing state. No backups were created. After the managed restart,
+Anytype and Telegram report connected without platform errors. All four spaces
+completed discovery and report connected health; the catalog contains 4 ordinary
+chats and 10 discussions, and creator search tracks 59 objects. The installed
+package files match the final archive. No synthetic live chat messages were used.
+Evidence is under `.runtime/enable-20261007/` (`multispace-tests.log`,
+`multispace-install.json`, and `multispace-status.json`).
+
+## Multi-chat installation after Hermes update — 2026-10-07
+
+Installed plugin 0.3.0 on Hermes 0.21.5, commit
+`1ac3f97fbe0958aa2743c0c26202b20b3b4e760e`. The update had removed the required
+delivery/activity hooks; the existing patches applied cleanly. A fresh isolated
+test environment built through Hermes PM from the updated lock passed **90 plugin
+tests and 113 Hermes gateway regression tests** before installation.
+
+The tested seven core files and plugin package were installed with content-hash
+verification. Configuration now enables discovery in the existing space, creator
+discussion watches, and all-message replies in enrolled chats. Sender/admin
+allowlists, the home channel, two pinned chats, MCP configuration, credentials,
+and existing state were preserved. No backup was created, as explicitly requested.
+
+After a managed gateway restart, runtime status shows the updated code commit
+and both Anytype and Telegram connected without platform errors. The persisted
+discovery snapshot is initialized, both pinned chats have connected health, and
+the creator-search cache contains 34 objects. Logs, the install manifest, and
+test output are under `.runtime/enable-20261007/`. No synthetic live messages were
+sent. This confirms installation and live subscriptions; new-chat mentions and
+discussion replies still require a real conversation acceptance check.
+
+## Multi-chat implementation — 2026-10-06
+
+Live read-only recheck at 21:52 UTC after the updated app started: the served
+OpenAPI now includes both new subscription routes. Authentication succeeded;
+the gateway's actual client opened both streams and verified their space scope,
+envelopes, and snapshot completion. Chat discovery returned 2 chats; the
+creator-filtered search returned 34 objects. Both snapshots completed without
+warnings or resume IDs. Streams were then closed without sending messages or
+changing objects. Evidence: `.runtime/multichat-20261006/openapi-live.json` and
+`live-check.json`. The API prerequisite is now satisfied; installation and a real
+multi-chat conversation remain pending.
+
+Version 0.3.0 implements single-space discovery against Heart branch
+`go-0000-search-stream`, source commit `a8f4f0887`. Its chat and creator-search
+subscriptions use fresh snapshots without resume cursors; recovery uses bounded
+paginated REST history and authoritative message verification. The local specs
+are `docs/superpowers/specs/2026-10-06-apiv2-space-chat-stream-design.md` and
+`docs/superpowers/specs/2026-10-06-apiv2-object-stream.md` in the Heart checkout.
+
+**90 plugin tests passed: 51 existing tests and 39 multi-chat cases.** The full
+suite ran through Hermes's canonical parallel test runner against the isolated
+`653bc4f288fc00db362c1082a3b652542314fbef` baseline with the existing generic
+delivery/activity patches. Coverage includes:
+
+- Authorized mentions, first-mention edits, creator discussions, independent watch
+  reasons, and ordering between the chat and search streams.
+- Crash during bootstrap, historical backfill, late-synced additions beyond the
+  recent-message window, incomplete pagination, and rolled-back mention edits.
+- Real Hermes group authorization and thread sessions, pending control answers,
+  bounded parent context, merged attachment references, and standalone delivery.
+- Removal and scope checks on message/activity output, independent per-chat
+  failures, and read-only POST search streaming outside the mutation lock.
+- Both HTTP subscriptions through adapter startup, creator-based first-comment
+  admission, the real Hermes message-handler path, a REST reply to that discussion,
+  receipt completion, and shutdown closing both streams. Model calls are mocked.
+
+Three Astra reviewers examined the plan before implementation and the code after
+implementation: Heart contracts, persistence/recovery, and Hermes authorization
+and scope. Their findings were fixed, covered by regressions, and re-reviewed;
+no remaining blockers were reported in the final targeted reviews.
+
+The initial authenticated OpenAPI fetch from port 31009 exposed only the existing
+per-chat message stream, not the new chat/search subscription routes. Its snapshot
+is saved locally under `.runtime/multichat-20261006/openapi.json`. Therefore this
+release was initially source-tested and packaged without live verification. The
+read-only recheck above resolves that API blocker. The gateway is **not installed
+or tested in a live conversation**. No live chat messages or objects were created.
+Enable `extra.discovery` in the owning profile after installation and verify real mentions,
+creator discussions, offline catch-up, and Desktop/mobile rendering before
+declaring live acceptance complete.
+
+## Reinstall after Hermes update — 2026-09-30
+
+Version 0.2.1 adapts the delivery patch to Hermes commit
+`653bc4f288fc00db362c1082a3b652542314fbef`, retaining upstream's `reply_expected`
+field and merge behavior. The activity patch is unchanged. The updated delivery
+patch is `patches/hermes-delivery-context-653bc4f.patch`; the original patch remains
+available for the earlier baseline.
+
+**51 plugin tests and 113 Hermes gateway regression tests passed**, using Python
+3.14.7 and a fresh environment built by Hermes PM with its locked dev/test groups.
+Checks used an isolated archive of the current Hermes commit containing exactly
+the seven restored production files. Running the upstream tests inside the live
+installation initially triggered its real-home I/O guard and warning-path failures;
+the untouched isolated baseline and the patched isolated checkout passed the
+comparison checks. The plugin fixture no longer needs PyYAML, which current Hermes
+has replaced. Its test wrapper now passes the selected source checkout as a pytest
+option so the canonical runner's environment scrub cannot silently select `.dev`.
+
+The saved API credential authenticated with HTTP 200 and the running Anytype schema
+still exposes the chat status endpoint. Reinstallation preserves the configured
+chats, sender/admin identities, home channel, MCP configuration and state database.
+After restarting through the managed Hermes launcher, the gateway reports running
+on the updated commit, with Anytype and Telegram connected. `hermes anytype status`
+confirms both General and Hermes Home are connected, with no uncertain operations.
+
 ## Activity update — 2026-09-25
 
 Version 0.2.0 adds Heart chat-status publication and the generic Hermes activity
