@@ -14,7 +14,7 @@ contract and documents native account/service/join/key setup and Heart HTTP MCP.
 - Explicit space/chat targets, account-identity or participant-ID allowlists, and anyone mode.
 - Bot echo suppression, per-user group sessions, and all-message or literal-prefix triggers.
 - Final replies, reply context, object/collection links, native attachments, and UTF-16-safe chunking.
-- Durable input receipts, restart catch-up, periodic history reconciliation, and persisted per-chunk sends.
+- Durable handoff receipts, restart catch-up, periodic history reconciliation, and persisted per-chunk sends.
 - Scoped credentials and state, standard Hermes commands/approvals, and explicit-target standalone sends.
 - Local `@anyproto/anytype-mcp@2.0.1`, verified against the running API.
 - Ephemeral thinking/status labels and tool execution activity through Heart's chat `/status` route.
@@ -103,49 +103,27 @@ Binary upload/download hooks, incremental edits, read receipts and reply-only tr
 For the route to reviewed catalog inclusion and an explanation of the remaining
 core dependencies, see [the plugin submission steps](docs/HERMES_PLUGIN_SUBMISSION.md).
 
-Version **0.5.1** uses Hermes's public `pre_tool_call`, `post_tool_call` and
-`post_llm_call` hooks. The old activity callback patch is no longer required or
-packaged. Native typing and routine status use the existing adapter interfaces.
+Version **0.6.0** runs on stock Hermes, with no activity or recovery patches.
+Validated against unmodified `ec3249919accf7bc51f780dcff663e8f19a0e176`
+(`main`, 2026-11-10). Tool activity uses the public `pre_tool_call`,
+`post_tool_call` and `post_llm_call` hooks; typing and routine status use the
+adapter interfaces. See [validation](docs/VALIDATION.md) for test coverage and limits.
 
-Validated on Hermes `1ac3f97fbe0958aa2743c0c26202b20b3b4e760e` (0.21.5), with
-**only the delivery/receipt patch** applied. All 114 plugin tests pass. This is
-not yet a patch-free release: the plugin still refuses to start without the
-recovery interfaces. That dependency will be reviewed separately.
-
-The remaining [delivery/receipt patch](patches/hermes-delivery-context-653bc4f.patch):
-
-1. Persists reply/attachment context and keeps the delivery ID stable across initial and recovered sends.
-2. Preserves input IDs across merges, debounce and steering, and reports inline control completion.
-
-Check applicability against the Hermes checkout you actually run:
-
-```sh
-git -C ../hermes-agent apply --check "$PWD/patches/hermes-delivery-context-653bc4f.patch"
-git -C ../hermes-agent apply "$PWD/patches/hermes-delivery-context-653bc4f.patch"
-```
-
-When upgrading an installation that already has the activity patch, remove that
-patch before enabling 0.5.0 to avoid duplicate activity. First verify the reverse
-patch applies; stop if it does not, and inspect the local changes:
-
-```sh
-git -C ../hermes-agent apply --reverse --check "$PWD/patches/hermes-activity-callbacks.patch"
-git -C ../hermes-agent apply --reverse "$PWD/patches/hermes-activity-callbacks.patch"
-```
-
-The obsolete patch remains in this source repository only for migration. The
-original `hermes-delivery-context.patch` targets older Hermes; see the dated
-history in [validation](docs/VALIDATION.md). Hermes upgrades require compatibility
-checks before restoring any remaining local patch.
+The previous implementation, including its recovery patches, is preserved in
+commit `02555cd`. Historical patch files remain in the repository for migration
+reference and are excluded from release archives. Do not apply them to current
+Hermes. When upgrading an existing patched installation, use a clean upstream
+checkout/environment and keep the owning profile's configuration and Anytype
+state database. Do not blindly reverse old patches over newer Hermes code.
 
 ## Install and configure
 
-1. Apply the delivery/receipt patch above, or use a Hermes release that supplies the same tested contracts.
+1. Use the stock Hermes revision above. No core patch is needed.
 2. Run `python3 scripts/package.py`. Extract `dist/anytype-platform.zip` into the owning profile's `plugins` directory. The resulting directory must be `<profile-home>/plugins/anytype-platform/`, containing `plugin.yaml` and `__init__.py`.
 3. Merge [hermes.example.yaml](hermes.example.yaml) into that profile's `config.yaml`. Append `anytype-platform` to any existing `plugins.enabled` list and keep existing model/provider settings.
 4. Put `ANYTYPE_API_KEY=<your key>` in the owning profile's `.env` or secret store. Fill in full space/chat IDs and your **other account's** identity or participant ID. Use `group_allow_from: ["*"]` for anyone in those configured chats.
 5. Keep explicit operator IDs in `group_allow_admin_from`. An empty admin list disables Hermes's slash-command privilege gate; this is independent of chat admission.
-6. Enable the Anytype MCP tools for the relevant Hermes profile/platform using Hermes's normal tool configuration. Start that profile's gateway using the patched Hermes installation.
+6. Enable the Anytype MCP tools for the relevant Hermes profile/platform using Hermes's normal tool configuration. Start that profile's gateway using the stock Hermes installation.
 
 Both the gateway and MCP subprocess must reach the same API origin. The example uses `http://127.0.0.1:31009`; in a container, loopback belongs to the container. Gateway and MCP secrets resolve through the owning profile. Never copy the example over an existing profile wholesale.
 
@@ -157,7 +135,7 @@ In prefix mode, use `!hermes your request`. Authorized slash commands and active
 
 ## Object workflows
 
-Version 0.5.1 bundles a small [Anytype workflow skill](skills/anytype/SKILL.md),
+The plugin bundles a small [Anytype workflow skill](skills/anytype/SKILL.md),
 registered as `anytype-platform:anytype`. It covers searches, research objects,
 tasks, discussion context, object links and scheduled destinations. The gateway
 hint asks the agent to load it with `skill_view` for research, task management or Anytype object work;
@@ -195,9 +173,38 @@ hermes anytype reconcile --deep
 
 Use the selected profile's normal Hermes CLI option when invoking these commands. Status exposes health, counts and uncertain operation IDs without printing message bodies. Deep reconciliation scans up to 100,000 retained messages per chat and records eligible inputs for dispatch when the gateway next starts. It does not run the agent or post replies.
 
-Known unsent/rejected chunks can retry with their original payload/key. An uncertain send remains uncertain across restarts; a generic Hermes retry cannot turn it into a fresh POST. Review the local receipt and remote chat before resolving it. The initial operator CLI reports these cases; it does not yet provide a guided manual resolution command. Interrupted tool-bearing inputs are left to Hermes's recovery or reported as uncertain, never independently replayed by the plugin.
+Input receipts track transport handoff, not agent execution. Eligible inputs are
+`pending`, then `handing_off` before calling Hermes, and `handed_off` when the
+call returns. A handoff may queue, merge, filter or handle a command; it does not
+prove durable admission, execution completion or successful delivery. An exception
+or interruption leaves `uncertain`; the plugin never independently replays that
+input. Hermes owns execution recovery. A crash after handoff but before durable
+Hermes admission can therefore require the user to resend the request.
 
-This is not an exactly-once system. Anytype's idempotency cache is in memory. In legacy target-only mode, arbitrarily old out-of-order additions can fall outside a finite history overlap: reconciliation checks 1,000 recent messages every five minutes and scans further when the prior boundary is outside that window; a stream `resync_required` requests a deeper scan. Discovery mode uses the complete bounded REST recovery described above. Unresolved coverage remains visible.
+Existing checkpoints, watch state and receipts are retained. On upgrade, old
+`dispatched`/`processing` receipts become `uncertain`; old terminal receipts stay
+terminal. New inputs arriving during an outage are still recovered from history.
+Handed-off inputs do not count toward the plugin's pending-input limit.
+
+Outgoing payloads and per-chunk API receipts remain persisted. Immediate retries
+of an anchored reply reuse its operation and skip delivered chunks. Ambiguous
+POSTs do not trigger an immediate retry or plain-text fallback. Unanchored partial
+sends defer to Hermes recovery instead of silently repeating their delivered head.
+Independent standalone sends, even with identical text, remain separate operations.
+
+Hermes's standard delivery ledger owns delayed/restart recovery of final replies.
+It saves text, chat and thread, but not our exact reply anchor, explicit attachment
+metadata or operation ID. A recovery may send a new message with a visible
+“may be a duplicate” marker; its original uncertain receipt stays visible.
+Links remain in the recovered text and can regenerate available same-space previews.
+Standalone/cron sends follow the recovery policy of their Hermes caller.
+
+This is best-effort delivery, not an exactly-once system. Anytype's idempotency
+cache is in memory. In legacy target-only mode, arbitrarily old out-of-order
+additions can fall outside a finite history overlap: reconciliation checks 1,000
+recent messages every five minutes and scans further when the prior boundary is
+outside that window; `resync_required` requests a deeper scan. Discovery mode uses
+the bounded REST recovery described above. Unresolved coverage remains visible.
 
 Writes are paced to one per second per client, with server 429 guidance handled by the normal delivery ledger. MCP and other processes share Anytype's server-side budget. Do not automatically delete final chat messages or attached files for cleanup.
 
@@ -257,6 +264,8 @@ bash scripts/prepare-dev.sh ../hermes-agent
 # pytest, pytest-asyncio and pytest-timeout.
 HERMES_PYTHON=/absolute/path/to/python bash scripts/run-tests.sh -j 3
 ```
+
+The development helper creates a clean, detached upstream checkout and never applies patches. It refuses to replace an existing modified checkout; pass a new destination as its second argument and set `HERMES_SOURCE` for tests.
 
 The wrapper invokes Hermes's prescribed `scripts/run_tests.sh`, including isolated homes, sanitized environment and per-file subprocesses. The local `.venv` is the default when `HERMES_PYTHON` is omitted. Source remains in this repository; `.dev`, `.venv`, `.runtime` and `dist` are excluded from version control. The package builder uses an explicit file allowlist and includes no token or runtime database.
 

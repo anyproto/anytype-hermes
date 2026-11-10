@@ -152,11 +152,12 @@ async def test_independent_readiness_identity_context_and_same_ids(fleet):
     assert await adapter.connect()
     await asyncio.wait_for(adapter.discovery.for_space('space-a').ready.wait(), 5)
     heart.add('space-a')
-    await eventually(lambda: len(adapter.store.inputs(['completed'])) == 1)
+    await eventually(lambda: len(adapter.store.inputs(['handed_off'])) == 1)
     assert not adapter.discovery.for_space('space-b').ready.is_set()
     heart.add('space-b')
     heart.holds[('space-b', 'search')].set()
-    await eventually(lambda: len(adapter.store.inputs(['completed'])) == 2)
+    await eventually(lambda: len(adapter.store.inputs(['handed_off'])) == 2)
+    await eventually(lambda: len([r for r in heart.calls if r.method == 'POST' and r.url.path.endswith('/messages')]) == 2)
     assert set(adapter._targets) == {'space-a/chat', 'space-b/chat'}
     assert {e.source.scope_id for e in handled} == {'space-a', 'space-b'}
     assert len({adapter._event_session_key(e) for e in handled}) == 2
@@ -212,13 +213,14 @@ async def test_restart_discovers_new_spaces_and_suspends_removed_destinations(fl
     for worker in adapter.discovery.workers.values():
         await asyncio.wait_for(worker.ready.wait(), 5)
     assert set(adapter.discovery.workers) == {'space-a', 'space-c'}
-    await eventually(lambda: bool(adapter.store.inputs(['completed'])))
-    assert adapter.store.inputs(['completed'])[0]['target'] == 'space-c/chat'
+    await eventually(lambda: bool(adapter.store.inputs(['handed_off'])))
+    assert adapter.store.inputs(['handed_off'])[0]['target'] == 'space-c/chat'
     assert not adapter.store.discovered('space-b/chat')['available']
     monkeypatch.setattr('anytype_plugin.adapter.Client', lambda *a, **kw:
                         Client(adapter.settings.base_url, 'test', transport=httpx.MockTransport(heart)))
     assert not (await standalone_send(adapter.config, 'space-b/chat', 'no'))['success']
     assert not (await standalone_send(adapter.config, 'unknown/chat', 'no'))['success']
+    await eventually(lambda: bool([r for r in heart.calls if r.method == 'POST' and r.url.path.endswith('/messages')]))
     sends = [r for r in heart.calls if r.method == 'POST' and r.url.path.endswith('/messages')]
     assert len(sends) == 1 and '/space-c/' in sends[0].url.path
 

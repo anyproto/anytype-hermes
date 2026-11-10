@@ -1,5 +1,11 @@
 # Standalone Anytype setup
 
+Gateway 0.6 requires no Hermes core patches. Use the tested stock revision in
+[compatibility](../README.md#hermes-compatibility). Keep the existing profile and
+`anytype/state.sqlite3` when upgrading; the plugin preserves checkpoints and
+historical receipts. Recovery limits are documented in
+[operation](../README.md#recovery-and-operation).
+
 `hermes anytype setup` prepares and validates a connection in the active Hermes
 profile. Select that profile using Hermes's normal profile mechanism. The command
 is available without an API key. Platform-menu provisioning is deliberately not

@@ -28,7 +28,7 @@ marked **proposed** are contracts to implement, not currently available interfac
 - Use the CLI's planned built-in **Streamable HTTP MCP** when available. Retain
   the current Node MCP wrapper for compatible installations without that server.
 - Use public Hermes registration and configuration interfaces. This work adds no
-  core patch and does not change the existing recovery-patch dependency.
+  core patch. Gateway 0.6 also removes the historical recovery-patch dependency.
 
 ## 2. Existing capabilities and work required
 
@@ -536,8 +536,8 @@ Implementation order:
 3. Add built-in HTTP MCP setup when its server contract is available; retain
    explicit wrapper fallback and chat-only setup.
 4. Add the join/restart workflow, migration guidance and automated fresh-install
-   coverage. Review the remaining recovery dependency separately before a
-   patch-free public release.
+   coverage. Verify the stock Hermes recovery limits documented in the gateway
+   specification before public release.
 
 Acceptance must cover:
 

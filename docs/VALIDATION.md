@@ -1,5 +1,41 @@
 # Validation record
 
+## Stock Hermes migration — 2026-11-10
+
+Version **0.6.0** passes **325 tests, 0 failures, 0 skips** on unmodified Hermes
+`ec3249919accf7bc51f780dcff663e8f19a0e176` (main, fetched 2026-11-10).
+The previous patched implementation is committed at `02555cd` for history.
+No changes were made to the installed Hermes or live plugin/configuration.
+
+Validation uses Hermes's canonical per-file runner with isolated homes and
+mocked Anytype HTTP. It reuses the existing Python 3.14 test interpreter; it is
+not a fresh dependency-lock installation or a live chat/model acceptance run.
+The optional local CLI read-only capability smoke also passed. Evidence:
+`.runtime/patch-free-20261110/tests-final.log`.
+
+Coverage includes all 15 native activity-hook tests, 39 multichat tests and
+8 multispace tests. New/revised checks cover:
+
+- Standard MessageEvent construction and plugin/CLI/skill discovery on stock core.
+- Merged and inline-control handoffs without per-input execution-completion claims.
+- Failed/cancelled handoffs, restart state migration and suppression of replay.
+- Stock boot/runtime ledger recovery with a visible marker, preserved destination,
+  and explicitly absent original reply anchor/metadata-only attachments.
+- No immediate plain-text fallback after ambiguous anchored or unanchored POSTs.
+- Retry of only unsent anchored chunks; no unmarked replay of unanchored partial sends.
+- Existing history catch-up, profile scope, identity policy, setup and MCP wiring.
+
+The dev helper smoke verifies that only committed upstream source is cloned,
+clean reruns succeed and modified destination files are preserved on refusal.
+Packaging excludes all patches and runtime state. Historical patch files stay in
+source for reference only. The supported contract and upgrade limitations are in
+[README](../README.md#recovery-and-operation).
+
+Before public release, perform a live new-profile setup/chat/restart acceptance
+run and review remaining private-import warnings for catalog admission. A test
+on main does not certify v0.23.1 or other release tags without separate checks.
+The dated records below describe earlier implementations and installations.
+
 ## Bundled workflow skill — 2026-10-09
 
 Version 0.5.1 passes **114 plugin tests** on the same isolated Hermes `1ac3f97f`

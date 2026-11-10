@@ -73,7 +73,8 @@ class Sender:
         metadata = metadata or {}
         operation = metadata.get('delivery_id')
         if not operation:
-            # Non-ledger command replies still have a unique incoming anchor.
+            # Stock Hermes gives ordinary replies an incoming anchor. It does not
+            # pass a stable operation ID to recovered or standalone sends.
             fingerprint = json.dumps([target.key, reply_to, content, metadata.get('attachments', [])])
             operation = ('reply:' + hashlib.sha256(fingerprint.encode()).hexdigest()
                          if reply_to else 'standalone:' + str(uuid.uuid4()))
@@ -87,29 +88,39 @@ class Sender:
                     payloads = await self._payloads(target, content, reply_to, metadata)
                     rows = self.store.prepare_delivery(operation, target.key, content, payloads)
                 remote_ids = []
+
+                def failure(error, **kwargs):
+                    # Without an anchor/explicit ID a subsequent send has a fresh
+                    # identity. Let Hermes defer partial delivery to its marked
+                    # recovery instead of repeating already-visible chunks inline.
+                    partial = bool(remote_ids) and not (reply_to or metadata.get('delivery_id'))
+                    return SendResult(False, error=error,
+                                      raw_response={'partial_overflow': True} if partial else None,
+                                      **kwargs)
+
                 for row in rows:
                     if row['status'] == 'delivered':
                         remote_ids.append(row['remote_id'])
                         continue
                     if row['status'] in {'sending', 'uncertain', 'failed'}:
-                        return SendResult(False, error=f'anytype_delivery_{row["status"]}:{operation}')
+                        return failure(f'anytype_delivery_{row["status"]}:{operation}')
                     self.store.delivery_status(operation, row['chunk'], 'sending')
                     try:
                         remote_id = await self._deliver(target, operation, row)
                     except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
                         self.store.delivery_status(operation, row['chunk'], 'pending')
-                        return SendResult(False, error='Anytype ConnectError before delivery', retryable=True)
+                        return failure('Anytype ConnectError before delivery', retryable=True)
                     except APIError as error:
                         if error.status == 429:
                             self.store.delivery_status(operation, row['chunk'], 'pending')
-                            return SendResult(False, error=f'flood_control:{error.retry_after or 60}',
-                                              retry_after=error.retry_after or 60)
+                            return failure(f'flood_control:{error.retry_after or 60}',
+                                           retry_after=error.retry_after or 60)
                         status = 'uncertain' if error.status >= 500 else 'failed'
                         self.store.delivery_status(operation, row['chunk'], status)
-                        return SendResult(False, error=f'anytype_delivery_{status}:{operation}:HTTP{error.status}')
+                        return failure(f'anytype_delivery_{status}:{operation}:HTTP{error.status}')
                     except (httpx.HTTPError, ProtocolError):
                         self.store.delivery_status(operation, row['chunk'], 'uncertain')
-                        return SendResult(False, error=f'anytype_delivery_uncertain:{operation}')
+                        return failure(f'anytype_delivery_uncertain:{operation}')
                     self.store.delivery_status(operation, row['chunk'], 'delivered', remote_id)
                     remote_ids.append(remote_id)
                 return SendResult(True, message_id=remote_ids[-1], continuation_message_ids=tuple(remote_ids[:-1]))

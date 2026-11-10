@@ -1,7 +1,7 @@
 name: anytype-platform
 label: Anytype
 kind: platform
-version: 0.5.1
+version: 0.6.0
 provides_hooks:
   - pre_tool_call
   - post_tool_call

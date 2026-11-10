@@ -11,7 +11,7 @@ import httpx
 
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.platforms.event import MessageEvent, ProcessingOutcome
+from gateway.platforms.event import MessageEvent
 from hermes_constants import get_hermes_home
 
 from .client import APIError, Client, ProtocolError, ResyncRequired, event_payload
@@ -73,13 +73,6 @@ class AnytypeAdapter(BasePlatformAdapter):
     def message_len_fn(self):
         return utf16_len
 
-    def get_delivery_context(self, *, reply_to, metadata):
-        # Opt into exact-payload recovery in the accompanying generic Hermes patch.
-        return {'reply_to': reply_to, 'metadata': {
-            key: value for key, value in (metadata or {}).items()
-            if key in {'attachments', 'hermes_profile', 'thread_id'}
-        }}
-
     async def _refresh_members(self, space):
         try:
             rows = [row async for row in self.client.rows(f'/v2/spaces/{quote(space, safe="")}/members')]
@@ -138,8 +131,6 @@ class AnytypeAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect=False, receive=True):
         try:
             self._discovery_started = datetime.now(timezone.utc).timestamp()
-            if not hasattr(BasePlatformAdapter, 'get_delivery_context'):
-                raise RuntimeError('Apply patches/hermes-delivery-context.patch before starting Anytype')
             if self.client is None:
                 self.client = Client(self.settings.base_url, resolve_api_key({'api_key_env': self.settings.api_key_env}))
             await self.client.request('GET', '/v2/auth/whoami')
@@ -407,9 +398,7 @@ class AnytypeAdapter(BasePlatformAdapter):
                              channel_prompt=(f'Current Anytype space_id: {target.space_id}\nchat_id: {target.chat_id}\n'
                                              f'For scheduled jobs here, default to deliver="{job_destination}".'),
                              reply_to_message_id=message.get('reply_to'),
-                             metadata={'anytype_input_ids': [message['id']],
-                                       **({'thread_id': target.chat_id} if discussion else {})},
-                             ingress_message_ids=[message['id']])
+                             metadata={'thread_id': target.chat_id} if discussion else {})
         if message.get('at'):
             try:
                 event.timestamp = datetime.fromisoformat(message['at'].replace('Z', '+00:00'))
@@ -521,10 +510,24 @@ class AnytypeAdapter(BasePlatformAdapter):
                     if (not self.discovery.available(target.key) or not current or
                             current['status'] != 'pending' or current['payload'] != row['payload']):
                         continue
-                self.store.mark(target.key, event.message_id, 'dispatched')
-                await self.handle_message(event)
-                # Inline controls don't invoke processing hooks. The generic ingress hook
-                # patch closes those outcomes; uncertain inputs are never auto-replayed.
+                await self._handoff(event)
+
+    async def _handoff(self, event):
+        # Commit before calling Hermes: an interrupted handoff may already have run
+        # tools. Never replay it independently. A normal return is transport handoff,
+        # not proof of durable admission, successful execution, or reply delivery.
+        target, message_id = event.source.chat_id, event.message_id
+        self.store.mark(target, message_id, 'handing_off')
+        try:
+            await self.handle_message(event)
+        except asyncio.CancelledError:
+            self.store.mark(target, message_id, 'uncertain')
+            raise
+        except Exception as error:
+            self.store.mark(target, message_id, 'uncertain')
+            log.error('Anytype input handoff failed (%s); receipt retained as uncertain', type(error).__name__)
+        else:
+            self.store.mark(target, message_id, 'handed_off')
 
     async def on_processing_start(self, event):
         if self.activity and event.source.chat_id in self._targets:
@@ -533,22 +536,18 @@ class AnytypeAdapter(BasePlatformAdapter):
                 tool_hooks.unbind(previous)
             self._activity_bindings[id(event)] = tool_hooks.bind(
                 self.activity, self._targets[event.source.chat_id])
-        for message_id in self._receipt_ids(event):
-            self.store.mark(event.source.chat_id, message_id, 'processing')
 
     async def on_processing_complete(self, event, outcome):
         binding = self._activity_bindings.pop(id(event), None)
         if binding:
             tool_hooks.unbind(binding)
-        status = {ProcessingOutcome.SUCCESS: 'completed', ProcessingOutcome.CANCELLED: 'cancelled',
-                  ProcessingOutcome.FAILURE: 'uncertain'}[outcome]
-        for message_id in self._receipt_ids(event):
-            self.store.mark(event.source.chat_id, message_id, status)
 
-    @staticmethod
-    def _receipt_ids(event):
-        return set(getattr(event, 'ingress_message_ids', []) or
-                   event.metadata.get('anytype_input_ids', [event.message_id]))
+    def _send_retry_is_final(self, result):
+        # Sender already handles rejected markup. An ambiguous POST must not become
+        # an unmarked duplicate through Hermes's immediate plain-text fallback.
+        # Hermes's delivery ledger can still send a visibly marked recovery later.
+        return (result.error or '').startswith((
+            'anytype_delivery_uncertain:', 'anytype_delivery_sending:', 'anytype_delivery_failed:'))
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         if (not self.sender or chat_id not in self._targets or

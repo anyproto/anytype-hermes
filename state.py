@@ -320,14 +320,15 @@ class Store:
                             (status, time.time(), self.ns, target, message_id))
 
     def recover_inputs(self):
-        # Hermes may resume its own durable turn. Never independently rerun side effects.
+        # Preserve old receipt states on upgrade; only unfinished handoffs/legacy
+        # executions become uncertain. Hermes alone owns any execution recovery.
         with self.db:
-            self.db.execute("UPDATE inputs SET status='uncertain' WHERE ns=? AND status IN ('dispatched','processing')",
+            self.db.execute("UPDATE inputs SET status='uncertain' WHERE ns=? AND status IN ('handing_off','dispatched','processing')",
                             (self.ns,))
 
     def pending_count(self):
         return self.db.execute(
-            "SELECT count(*) FROM inputs WHERE ns=? AND status IN ('pending','dispatched','processing')",
+            "SELECT count(*) FROM inputs WHERE ns=? AND status IN ('pending','handing_off','dispatched','processing')",
             (self.ns,)).fetchone()[0]
 
     def delivery(self, operation):

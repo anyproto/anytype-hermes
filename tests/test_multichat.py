@@ -344,7 +344,7 @@ async def test_shared_discussion_session_and_merge_retains_each_attachment(multi
     for event in (a, b):
         merge_pending_message_event(queue, 's', event, merge_text=True)
     assert 'first' in queue['s'].text and 'second' in queue['s'].text
-    assert adapter.get_delivery_context(reply_to='m1', metadata={'thread_id': 'discussion'})['metadata']['thread_id'] == 'discussion'
+    assert queue['s'].metadata['thread_id'] == 'discussion'
 
 
 async def test_discussion_uses_real_hermes_group_authorization_and_admin_policy(multi):
@@ -582,7 +582,7 @@ async def test_multichat_gateway_lifecycle_with_both_http_streams():
         await asyncio.wait_for(complete.wait(), 5)
         assert len(handled) == 1 and 'Research' in handled[0].channel_context
         assert handled[0].source.thread_id == 'discussion'
-        assert adapter.store.inputs(['completed'])[0]['message_id'] == 'm1'
+        assert adapter.store.inputs(['handed_off'])[0]['message_id'] == 'm1'
         sends = [r for r in heart.calls if r.method == 'POST']
         assert len(sends) == 1 and sends[0].url.path.endswith('/chats/discussion/messages')
         assert json.loads(sends[0].content)['reply_to'] == 'm1'

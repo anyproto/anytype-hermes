@@ -38,7 +38,7 @@ def test_active_backlog_limit_does_not_advance_cursor(tmp_path):
     state.baseline('space/chat', [], None)
     for i in range(1000):
         state.record('space/chat', message(str(i)), 'pending', str(i))
-        state.mark('space/chat', str(i), 'dispatched')
+        state.mark('space/chat', str(i), 'handing_off')
     with pytest.raises(RuntimeError):
         state.record('space/chat', message('overflow'), 'pending', 'must-not-commit')
     assert state.chat('space/chat')['cursor'] == '999'
@@ -57,8 +57,8 @@ async def test_sender_preserves_links_attachments_and_deduplicates_operation(tmp
     store = Store(tmp_path / 'state.sqlite3', 'node|bot')
     sender = Sender(client, store, settings)
     content = object_link('space.full', 'report', 'Report')
-    first = await sender.send(settings.targets[0], content, 'incoming', {'delivery_id': 'op1'})
-    again = await sender.send(settings.targets[0], content, 'incoming', {'delivery_id': 'op1'})
+    first = await sender.send(settings.targets[0], content, 'incoming')
+    again = await sender.send(settings.targets[0], content, 'incoming')
     assert first.success and again.message_id == first.message_id
     assert len(requests) == 1
     assert json.loads(requests[0].content) == {'text': content, 'reply_to': 'incoming', 'attachments': ['report']}
@@ -137,4 +137,24 @@ async def test_rejected_plain_text_fails_without_resend(tmp_path, settings):
     assert not result.success and 'failed' in result.error
     assert len(calls) == 1
     await client.close()
+    store.close()
+
+
+@pytest.mark.parametrize('before,after', [
+    ('pending', 'pending'), ('handing_off', 'uncertain'), ('handed_off', 'handed_off'),
+    ('dispatched', 'uncertain'), ('processing', 'uncertain'),
+    ('completed', 'completed'), ('cancelled', 'cancelled'), ('uncertain', 'uncertain'),
+])
+def test_receipt_migration_preserves_history_without_replaying_handoffs(tmp_path, before, after):
+    path = tmp_path / 'state.sqlite3'
+    store = Store(path, 'node|bot')
+    store.baseline('space/chat', [], 'cursor')
+    store.record('space/chat', message(), before)
+    store.close()
+    store = Store(path, 'node|bot')
+    store.recover_inputs()
+    assert store.receipt('space/chat', 'm1')['status'] == after
+    assert not store.record('space/chat', message(), 'pending')
+    assert store.chat('space/chat')['cursor'] == 'cursor'
+    assert store.pending_count() == (1 if after == 'pending' else 0)
     store.close()

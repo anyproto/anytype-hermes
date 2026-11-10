@@ -1,5 +1,10 @@
 # Local deployment
 
+Historical deployment log. These entries describe earlier installed versions, not
+the current installation. Version 0.6 uses stock Hermes; see [setup](SETUP.md) and
+[compatibility](../README.md#hermes-compatibility). This migration did not update or
+restart the installed gateway.
+
 Updated to **0.5.1** on 2026-10-09. The plugin now bundles the 287-word Anytype
 workflow skill, registered as `anytype-platform:anytype`, and asks the agent to
 load it for research, task management and Anytype object work. Four review lenses
