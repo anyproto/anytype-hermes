@@ -29,7 +29,7 @@ The dev helper smoke verifies that only committed upstream source is cloned,
 clean reruns succeed and modified destination files are preserved on refusal.
 Packaging excludes all patches and runtime state. Historical patch files stay in
 source for reference only. The supported contract and upgrade limitations are in
-[README](../README.md#recovery-and-operation).
+[operations guide](OPERATIONS.md#recovery-and-operation).
 
 Before public release, perform a live new-profile setup/chat/restart acceptance
 run and review remaining private-import warnings for catalog admission. A test

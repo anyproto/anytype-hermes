@@ -1,4 +1,4 @@
-# Anytype 0.4 configuration; requires the accompanying generic Hermes patches.
+# Anytype 0.6 configuration for stock Hermes; no core patches required.
 # Merge into the owning Hermes profile's config.yaml after installation.
 # Store ANYTYPE_API_KEY in that profile's .env / secret store, not here.
 # Replace every <...> placeholder. Use full space IDs.

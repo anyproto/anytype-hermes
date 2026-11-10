@@ -16,7 +16,7 @@ mention fields and global replay cursors. The implementation parses canonical
 mention markup and uses fresh snapshots plus bounded REST history reconciliation.
 Those implemented contracts supersede the corresponding API proposals below;
 multi-space isolation remains a later stage. See [the reviewed implementation plan](MULTICHAT_IMPLEMENTATION_PLAN.md)
-and [configuration/limitations](../README.md#multi-space-chats-and-discussions-04).
+and [configuration/limitations](OPERATIONS.md#chats-and-spaces).
 
 This document consolidates the proposed gateway extension and the Heart API v2
 changes it needs. It replaces earlier exploratory recommendations for these

@@ -1,369 +1,197 @@
-# Standalone Anytype setup
+# Set up Anytype
 
-Gateway 0.6 requires no Hermes core patches. Use the tested stock revision in
-[compatibility](../README.md#hermes-compatibility). Keep the existing profile and
-`anytype/state.sqlite3` when upgrading; the plugin preserves checkpoints and
-historical receipts. Recovery limits are documented in
-[operation](../README.md#recovery-and-operation).
+Install the plugin first using [the installation guide](INSTALL-OTHER-COMPUTER.md).
+Gateway 0.6 runs on the tested [stock Hermes revision](../README.md#hermes-compatibility)
+without core patches. Use `hermes anytype setup` for the connection wizard.
 
-`hermes anytype setup` prepares and validates a connection in the active Hermes
-profile. Select that profile using Hermes's normal profile mechanism. The command
-is available without an API key. Platform-menu provisioning is deliberately not
-registered: the inspected host's setup callback contract can overwrite plugin
-configuration and start a gateway unexpectedly.
+Choose a connection:
 
-Desktop, externally managed endpoints, and native CLI provisioning are supported.
-Native setup requires schema 1 and the capabilities implemented by Anytype CLI
-[`a9c6567` on `go-7383-full-wrapper`](https://github.com/anyproto/anytype-cli/blob/a9c656787c173f652d6c6adea06603b6ece1d1ae/docs/AUTOMATION.md).
-Hermes checks capabilities and strict JSON envelopes; it never parses human account-key
-output. Install that compatible CLI explicitly and select its executable. No installer,
-upgrade, restart, service replacement, or per-profile native instance is automatic.
-Existing services can also be attached with `--mode external` without native management.
+| Mode | Use it when | What to prepare |
+| --- | --- | --- |
+| [CLI](#anytype-cli) | Hermes should guide account, service and space setup. | Anytype CLI v0.5.0 installed locally. |
+| [Desktop](#desktop-app) | The bot runs in the Anytype desktop app. | A signed-in bot account, local API and API key. |
+| [External](#externally-managed-api) | You already manage an Anytype service. | Its reachable API address and key. |
+
+All paths finish with [saving and starting the connection](#save-and-start).
+Commands below use the active Hermes profile. See the
+[named-profile example](INSTALL-OTHER-COMPUTER.md#use-a-named-hermes-profile)
+to install and configure another one.
+
+The bot account and your human account must both belong to the space. The bot
+needs editor, admin or owner membership in every space selected during setup.
+Use your human account in the sender allowlist; the gateway ignores the bot's
+own messages. Allowlists do not restrict the agent's wider MCP, memory or tool access.
+
+## Anytype CLI
+
+Use released [Anytype CLI v0.5.0](https://github.com/anyproto/anytype-cli/releases/tag/v0.5.0)
+as the supported baseline. The [fresh-install walkthrough](INSTALL-OTHER-COMPUTER.md#2-install-released-anytype-cli)
+includes installation and a capability check. Hermes checks the CLI's automation
+capabilities before making changes.
+
+For a new bot, follow [the wizard choices](INSTALL-OTHER-COMPUTER.md#4-run-the-onboarding-wizard)
+for service installation, account creation, agent name, invitation and HTTP MCP.
+That walkthrough also selects private-file credential storage, which works on
+headless machines without a desktop keyring.
+
+For an existing local CLI account and running service:
+
+```sh
+hermes anytype setup --mode cli
+```
+
+Choose `reuse` for both Native service and Native account. If a matching service
+is installed but stopped, choose `start` for the service. Use `login` only when
+restoring an account into a CLI instance without one; supply the recovery key at
+the private prompt. Setup preserves an existing account's name and refuses
+account replacement.
+
+Native setup manages the CLI's one default instance on macOS or Linux. A separate
+Hermes profile does not create a separate Anytype instance. The CLI owns its
+service and recovery credentials; stopping Hermes leaves Anytype running.
+If setup reports pending invitation approval, approve it from your human account,
+then [resume](#resume-or-repair-setup). Continue to [save and start](#save-and-start).
+
+## Desktop app
+
+Prepare the desktop app before starting the wizard:
+
+1. Sign in as the bot account. Invite it to the intended space from your human
+   account and grant editor access or higher. Keep the desktop app running while
+   Hermes uses its API.
+2. Open **Settings → Local API** (called **API keys** in older builds). Enable
+   the local API and confirm it is listening. Note the displayed address; the
+   wizard defaults to `http://127.0.0.1:31009`, but your app may use another port.
+3. Choose **Create new** to create an API v2 key. Give the integration a stable
+   name, such as `Hermes`, and select **Read and write**. For the wizard's `all`
+   discovery choice, grant **All spaces**; for `single`, grant exactly that space.
+   Keep the application name when replacing an existing integration key.
+4. Copy the key for the wizard's private prompt. The account recovery key is a
+   different credential and is not used for desktop API authentication.
+
+Run:
 
 ```sh
 hermes anytype setup --mode desktop
-hermes anytype setup --resume
-hermes anytype doctor --json
-hermes anytype join
 ```
 
-The gateway and Anytype remain independently managed. Stopping/removing Hermes
-does not stop Anytype or remove its account/data. An existing account's public
-name is preserved. Account replacement is a separate migration; creating another
-account is never a way to rename one.
+Enter the API address and application key, then choose the matching discovery
+scope. Select `operator` access and your human account identity from the displayed
+members. Choose a home chat for scheduled output, or `skip` if you do not need one.
 
-## Native CLI setup
+At the MCP prompt, choose `http` only if your app provides an HTTP MCP endpoint.
+Enter the endpoint reported by that build and confirm whether it shares the API
+key. The CLI's built-in MCP support does not establish support in every desktop
+build. Choose `none` for chat-only operation, or use the
+[Node wrapper option](#mcp-options). Then [save and start](#save-and-start).
 
-Native mode manages the CLI's **one default instance**, shared independently of the
-Hermes profile. The journal binds its executable, absolute config/data/work paths,
-account identity, observed network and listener. Changing those facts blocks resume.
-An existing Hermes account must be verified through its prior API credential or an
-explicit `expected_account` before native mutations. Account replacement and rename
-are unsupported. Native service automation supports macOS launchd and Linux systemd;
-Windows native setup is not supported.
+The wizard connects to the desktop API; it does not create the desktop account,
+join spaces, enable the API or issue its key. A build without the required API v2
+chat/search streams must be updated before discovery can work.
 
-Choose `service.action: reuse|install|start`. `install` installs a matching native
-service definition and starts it; `start` starts an already installed matching service;
-`reuse` requires a reachable service. Existing mismatched definitions, binaries,
-listeners, environments, or older running services are refused by the CLI. Hermes
-never restarts a service or changes its account/network/listener to make it match.
-An explicit `service.listen_address` selects a fresh listener or confirms the existing
-one. The API origin always comes from live native inspection, including nondefault
-ports; an unproven binding remains `syncing` with an operator action.
+## Externally managed API
 
-Choose `account.action: create|login|reuse`. Creation requires the chosen Unicode
-`agent_name`; login takes `account.key_ref` privately, and reuse preserves the current
-account name. CLI-owned operation receipts recover create/login after interruption. A matching
-saved operation can bridge temporarily absent live network/name observations during
-recovery; saved proof is retained and fully checked after authentication. A reported
-different network/account still blocks replay.
-Hermes never requests an account key from create/login, stores it in the profile,
-or prints it. Anytype CLI owns recovery credentials and its native auto-login storage.
-For a fresh headless instance explicitly choose `cli.credential_backend: private_file`;
-the CLI persists that choice for later service auto-login. Without that choice,
-keyring access failures fail closed. Existing keyring markers are never migrated.
-
-`network.mode` defaults to `preserve`; `default` refuses an existing custom network,
-and `custom` requires an absolute `config_file`. A reused account must keep its
-existing config path. The file hash is bound for resume. Optional `expected_id`
-confirms an already observed network and cannot be used to guess a fresh network.
-The CLI validates the actual account network and config during create/login.
-
-A fresh named-space setup can use:
-
-```json
-{
-  "schema_version": 1,
-  "mode": "cli",
-  "cli": {"executable": "/absolute/path/to/anytype", "instance": "default", "credential_backend": "private_file"},
-  "service": {"action": "install"},
-  "account": {"action": "create"},
-  "agent_name": "Агент 🌿",
-  "network": {"mode": "default"},
-  "invitation_ref": {"file": "/private/path/invitation"},
-  "scope": {"mode": "single"},
-  "application_name": "Hermes assistant",
-  "access": "operator",
-  "operator_identities": ["operator-account-identity"],
-  "home": {"action": "skip"},
-  "mcp": {"mode": "http"},
-  "activation": "defer"
-}
-```
-
-For reuse, choose `service.action: reuse`, `account.action: reuse`, and an explicit
-scope. For login choose `account: {"action":"login","key_ref":{"file":"/private/path/account-key"}}`.
-A private invitation is optional; initial single-space scope may omit `space_id` only
-when that invitation will resolve it. `join_space: true` requests a private invitation
-prompt interactively. An explicit `api_grant` needs already resolved full space IDs.
-Native membership list/status runs before named key creation. Pending approval or
-sync returns exit 3 without minting the key. Removed/rejected historical spaces do
-not block an all-space grant for currently joined spaces.
-
-Hermes saves stable operation IDs and declared intent before each mutation. Resume
-reuses them, never searches for a same-name credential and never duplicates an
-uncertain operation with a fresh ID. The CLI owns native reconciliation and exact
-secret receipts. Once native private input is checkpointed, resume does not need the
-original key/invitation reference. If the CLI reports that input was never recorded,
-supply the original private input again. Invitations and account keys never enter
-the journal. `operation_uncertain` requires inspection; cancellation does not delete
-accounts, memberships, services, or older keys.
-
-The integration application name is stable across replacements. It defaults to a
-profile-derived `Hermes-…` name for a new connection; existing connections retain
-the verified name or require `application_name` when the old credential is unavailable.
-Only the generated API key is staged in Hermes. It takes precedence over inherited
-`api_key_ref` choices. The native receipt must prove the exact credential ID, account,
-application and grant, and the HTTP probe must confirm that same credential.
-Application names retain their exact UTF-8 bytes, including leading/trailing spaces;
-they are never normalized like an account display name. Dash-prefixed names are
-passed as positional values, not command flags.
-
-## Preparation and publication
-
-The wizard validates the candidate API grant, account identity, full IDs, member
-and chat surfaces, message history/streams, and selected discovery subscriptions.
-The served `/v2/docs/openapi.json` establishes write-route and activity support.
-The bot also needs editor, admin or owner membership in every selected space; a
-readwrite API key alone does not grant space write permission. No diagnostic
-sends a message or creates a dummy object. Optional home creation
-and the final test message require explicit choices.
-
-Preparation stages the integration key under a fresh profile secret name. It
-stores only non-secret choices, selected identities and operation references in
-`<profile-home>/anytype/setup.json`, separate from transport state. The active
-configuration and its old secrets are unchanged while the candidate is prepared.
-Correcting a private API/MCP reference during an incomplete attempt selects a
-fresh staged name when its value changes. Old staged values and completed home
-operations are retained. Existing references use Hermes’s authoritative active
-profile/external secret scope; a stale `.env` value cannot override that scope.
-`activation: defer` returns `restart_required`, with publication `prepared`.
-
-Publishing requires all affected profile consumers to remain stopped until the
-single atomic config replacement. HTTP MCP can reconnect independently of the
-gateway, so writing an endpoint and token separately is unsafe. The wizard
-preserves unrelated profile settings, group/thread settings and platform
-extras/overrides. A selected `extra.api_key_env` is authoritative: a missing value
-never falls back to `ANYTYPE_API_KEY`.
-
-Two publication paths are available on the inspected Hermes host:
-
-- `manage_gateway: true`: the supported Hermes lifecycle stops/starts a known,
-  installed, unshared profile gateway. The operator must close other MCP clients
-  and maintain exclusive access. An ambiguous/unmanaged or shared host service
-  receives a specific next action instead of an automatic broad stop.
-- Explicit offline boundary: the operator stops the profile and its clients,
-  prevents starts/config edits during publication, and acknowledges that boundary.
-  Setup additionally reserves the profile gateway runtime lock. This is operator
-  coordination, not a claim to detect or coordinate arbitrary MCP clients.
-
-`save_stopped` publishes and leaves consumers stopped. `activate` uses the normal
-managed lifecycle when selected and available; an offline-only boundary returns
-saved settings with an instruction to start through Hermes. Anytype is never
-stopped by either path. `doctor` verifies readiness separately after start.
-A reported running process does not establish that every MCP client has adopted
-the configuration.
-
-Before stopping, setup journals consumer identities and their running state. An
-interrupted or failed attempt restores only consumers it stopped, after verifying
-the prior configuration and identities. When restoration cannot be proved safe,
-the result names the stopped consumers and required action. Old and new integration
-keys remain valid; setup never revokes them on an ambiguous outcome.
-
-`setup --cancel` abandons an uncommitted candidate without deleting external
-operations. After commit, `setup --rollback` explicitly republishes prior owned
-settings and still-valid secret references under the same boundary. Intervening
-configuration edits block publication/rollback. The boundary also requires the
-operator to exclude uncooperative concurrent configuration writers; the host has
-no public cross-process compare-and-swap configuration API. Administrator-managed
-Anytype gateway or MCP pins are refused before consumers are stopped; update
-those settings through the owning administrator configuration. Unrelated managed
-settings do not block setup.
-
-Rollback checks an enabled MCP server independently of whether the prior gateway
-was enabled. If no prior account/grant evidence was saved for an MCP-only
-connection, setup refuses automatic restoration with an explicit recovery action.
-A known prior MCP connection is probed again before publication, including after
-a deferred rollback.
-
-## Automation input
-
-Use versioned JSON with non-secret choices and private references:
+Start the service and join the bot to the space through its owning client first.
+Obtain a readwrite API key with the same scope rules described for
+[desktop setup](#desktop-app). Use an address reachable from the Hermes process;
+inside a container, `127.0.0.1` refers to that container.
 
 ```sh
-hermes anytype setup --non-interactive --input /private/path/setup.json --json
+hermes anytype setup --mode external
 ```
 
-```json
-{
-  "schema_version": 1,
-  "mode": "desktop",
-  "base_url": "http://127.0.0.1:31009",
-  "api_key_ref": {"file": "/private/path/anytype-api-key"},
-  "scope": {"mode": "all"},
-  "access": "operator",
-  "operator_identities": ["operator-account-identity"],
-  "admin_identities": ["operator-account-identity"],
-  "home": {"action": "skip"},
-  "mcp": {"mode": "none"},
-  "activation": "defer"
-}
-```
+Supply the API address and key, choose the sender policy and home chat, then
+select [MCP](#mcp-options) and [save the connection](#save-and-start).
+Hermes does not install, start or stop an external Anytype service.
 
-Secret files must be absolute, regular files owned by the operator with no group
-or other permissions (mode `0600`); symlinks are refused. An `{"env": "NAME"}`
-reference resolves in the active profile's secret scope. Raw account keys,
-API/MCP tokens and invitations are never accepted as command-line arguments or
-input-document values. Interactive secrets use a private terminal prompt.
-`--json` selects the result format; it does not authorize mutations.
+## MCP options
 
-Other choices:
+MCP gives the agent tools to search and edit objects. The gateway handles chat.
 
-| Field | Meaning |
+| Choice | Requirements |
 | --- | --- |
-| `action` | Existing connection: `keep`, `repair`, or `change`. Keep runs read-only validation and retains the connection. |
-| `mode` | `cli`, `desktop`, or `external`. An explicit existing API origin is preserved unless replaced deliberately. |
-| `expected_account` | Expected stable bot identity, useful for repairing an unavailable old connection. A different account is blocked. |
-| `application_name` | Previously verified integration key name. Required with `expected_account` when the old key cannot be inspected during repair. Replacement keys retain the same application name because object ownership depends on it. |
-| `agent_name` | Public account name; Unicode/internal spaces preserved, outer whitespace trimmed, empty/control names refused. An existing different name requires supported explicit rename; otherwise setup refuses. |
-| `scope` | Gateway discovery: `{"mode":"all"}` discovers every space allowed by the API grant; `{"mode":"single","space_id":"full-id"}` stays fixed. |
-| `api_grant` | Intended credential access, separately from discovery: `{"all_spaces":true,"space_ids":[],"permission":"readwrite"}` or `{"all_spaces":false,"space_ids":["full-id-a","full-id-b"],"permission":"readwrite"}`. The candidate must match exactly. When omitted, all discovery requests an all-space grant and single discovery requests that one space; legacy `scope.grant: all` remains accepted. |
-| `access` | `operator` (recommended) or explicit `anyone`; administrators remain explicit account identities. |
-| `home` | `keep`, `skip`, `select` with full `space_id`/`chat_id`, or explicit `create` with `space_id` for Hermes Home. |
-| `activity_status` | Boolean; explicitly disable when the optional activity route is unavailable. |
-| `activation` | `defer`, `save_stopped`, or `activate`. |
-| `manage_gateway` | Explicitly use the supported lifecycle of the known unshared managed Hermes gateway. |
-| `ack_origin_change` | Required acknowledgement that origin changes select a new transport namespace; no receipts/watches are copied. |
-| `drop_outside_pins` | Explicitly remove incompatible pinned chats when switching to a fixed new space. Also select/skip a compatible home. |
-| `send_test_message` | Explicit final test to the selected home after commit. An ambiguous test send is never repeated automatically. |
+| `http` | Native CLI setup discovers its built-in endpoint and uses the same key. Desktop/external setup needs the backend's actual URL and authentication details. |
+| `wrapper` | Install/cache `@anyproto/anytype-mcp@2.0.1` with Node/npm before setup. Validation runs offline and never installs it for you. |
+| `none` | Chat-only operation. Remove an existing enabled Anytype MCP connection explicitly if switching to this choice. |
+| `keep` | Retain an existing connection after setup verifies its account and grant. |
 
-An exclusive operator-maintained boundary is supplied as:
+To prepare the wrapper cache, run this once, wait for the server to start, then
+stop it with Ctrl-C before setup:
 
-```json
-{
-  "schema_version": 1,
-  "activation": "save_stopped",
-  "offline_boundary": {
-    "profile_home": "/absolute/path/to/the/active/profile",
-    "exclusive": true,
-    "gateway_stopped": true,
-    "mcp_clients_stopped": true
-  }
-}
+```sh
+npx -y @anyproto/anytype-mcp@2.0.1
 ```
 
-This minimal document can be passed with `setup --resume`. Do not assert these
-conditions unless they hold throughout the commit. For managed gateway activation,
-set `manage_gateway: true`, `activation: activate`, and acknowledge exclusive
-access/MCP shutdown; setup manages the gateway itself and does not require
-`gateway_stopped: true`. The default is preparation, never an implicit stop.
+The MCP connection must match the gateway's account and intended API grant.
+Setup offers explicit replacement choices when a connection already exists.
+Protocol details and automation fields are in the [MCP reference](SETUP_REFERENCE.md#mcp).
 
-## MCP
+## Save and start
 
-The logical MCP name remains `anytype`. Choose chat-only explicitly with
-`mcp.mode: none`. If an enabled `anytype` MCP connection already exists, that
-choice also requires `mcp.conflict: remove`. A mismatched enabled MCP connection
-cannot survive a chat-only candidate activation.
+Keep the profile's gateway and other Hermes/MCP clients stopped while saving.
+Stop a foreground gateway with Ctrl-C, or use `hermes gateway stop` for its service.
+Keep Anytype running.
 
-In native mode, `mcp.mode: http` prefills the live reported URL and shared API key;
-conflicting URLs or separate-token choices are refused. For desktop/external mode,
-supply the backend's actual `url`; `shared_api_key: true` selects the staged API key,
-otherwise provide `token_ref`.
-Setup initializes MCP, applies the host’s tool filters, discovers tools required
-by the bundled skill, and verifies the same account and grant. Transport success
-alone is insufficient. No MCP URL is assumed.
+At the wizard's final prompts:
 
-Heart `92ed13917ebb` implements Streamable HTTP at `/mcp/full` on its API origin.
-For this known contract, setup negotiates `2025-06-18` or `2025-11-25` without a
-version header on initialization. Full mode excludes `auth_whoami` from its tool
-list, so setup checks `/v2/auth/whoami` with the actual MCP bearer, then calls the
-flat `get_member_me` tool for account identity. That REST check is allowed only
-for the exact same API origin, canonical path, reported Anytype server identity
-and supported protocol. Other MCP endpoints must expose their own grant tool;
-a nearby REST API does not establish their credentials. The pinned contract is
-covered by isolated tests, not a claim that every installed Heart build has it.
+| Prompt | Choice for a manual start |
+| --- | --- |
+| Publication | `save_stopped` |
+| Gateway coordination | `already_stopped` |
+| Other clients stopped and exclusive access | Confirm only after closing those clients; prevent concurrent starts or config edits until saving finishes. |
 
-`mcp.mode: wrapper` offers the documented Node wrapper configuration. It must be
-installed/cached explicitly by the operator first: validation starts `npx` in
-no-install/offline mode, so doctor never installs software. Existing v1-only
-wrappers lacking v2 identity/grant tools cannot establish this setup contract.
-Choose chat-only or a compatible version instead of assuming tools are safe.
+The default `defer` prepares and validates settings but leaves the live connection
+unchanged. If you chose it, run `hermes anytype setup --resume` and select the
+choices above. A gateway restart alone does not publish deferred settings.
 
-Replacing a current MCP configuration requires `mcp.conflict: replace`; transport
-fields are replaced as a unit, while supported tool/timeout preferences are kept.
-`mcp.mode: keep` validates that the retained server matches the candidate account
-and scope. Corresponding credential rotation must retain its stable application
-name; `mcp.application_name` supplies a known prior name when same-endpoint
-credentials cannot be inspected. Interactive setup offers replace/remove/keep
-choices when a server already exists. Unsupported server fields or inline
-credentials must be resolved before setup can journal the connection. A failure
-retains the prior live connection.
+After the wizard confirms the connection is saved:
 
-## Resume and joining
+```sh
+hermes anytype doctor --json
+```
 
-Setup resumes incomplete progress by default; `--resume` requires a saved attempt.
-Verified account identity remains binding across failed attempts and later resumes;
-a replacement key must still belong to that account. An empty disabled platform
-placeholder can be set up as a new connection, including after a fresh setup was
-rolled back. Explicit prior connection settings retain account protection even
-when that gateway is disabled.
-Resume restores attempt-stopped consumers before candidate validation. Interactive
-resume asks again whether to defer or publish unless this invocation supplied an
-activation choice. Publication revalidates the prepared identity, grant, stable
-application name, membership permissions, enabled activity and MCP tools. An interrupted
-home creation asks the operator to inspect/select its ID instead of creating a
-second chat. Private invitations are never stored merely to support resume.
+Resolve any reported `next_action`. When the gateway and selected MCP connection
+are ready, start the gateway:
 
-For desktop/external services, join in the owning client first, then run `join`
-to refresh authenticated membership. Non-interactive joining accepts
-`joined_space_id` and `discovery_action: retain|switch|all`. Native mode accepts
-`invitation_ref` privately (or prompts interactively), then polls its durable join
-operation with `join --resume`; a completed later invitation gets its own operation ID.
-Choose `discovery_action` before submitting the invitation. Before new or resumed
-native joins, Hermes probes the currently selected profile credential/account and
-verifies the recorded native origin, credential and instance binding. Changing that
-connection requires setup repair first. Administrator-managed Anytype gateway/MCP
-pins block native join before probing or mutation; unrelated managed settings and
-profile edits do not block joining.
-An observed invitation submission keeps `changed: true` through pending responses
-or subsequent validation failures. After native membership
-completes, `join --resume` also resumes the prepared publication candidate.
+```sh
+hermes gateway run
+```
 
-Retaining a fixed old scope reports **joined; outside gateway discovery scope**.
-For desktop/external mode, a named-space grant needs an explicitly supplied replacement
-key under the same stable application name. Native mode creates and recovers the
-exact replacement itself; it keeps CLI provenance and stages the new key before
-publication. If the old grant already covers the intended scope, native join verifies
-its exact credential and reuses it without creating another key. The replacement
-may grant both the old and new spaces while gateway discovery switches to the
-new one, or discovers all spaces in that named grant. An all-space
-grant already covers later spaces. Intended discovery changes prepare a candidate
-through the same publication protocol; deferred activation reports **joined;
-gateway restart required**. Startup discovers spaces, while individual chats
-still need mention/creator/pin enrollment. `response: all` applies to authorized
-messages in watched chats.
+From your allowed human account, use Anytype's account-mention picker to mention
+the bot in a chat. A typed display name is not an account mention. For background
+operation after this check, use the [service commands](INSTALL-OTHER-COMPUTER.md#5-check-and-start).
 
-Scheduled `deliver="anytype"` targets the configured home. Jobs from another space
-should retain their origin unless another destination was requested. Setup does
-not rewrite existing jobs.
+For setup to manage a known, unshared Hermes gateway service, choose `managed`
+coordination instead. See [publication options](SETUP_REFERENCE.md#preparation-and-publication)
+for activation, shutdown and rollback behavior.
 
-## Result envelope and validation
+## Resume or repair setup
 
-New commands return `schema_version`, `state`, `changed`, `next_action`, and an
-`error` with a typed `type` when applicable. Gateway and MCP results are separate.
-Exit codes: `0` requested work completed, `2` input/action/restart needed, `3`
-waiting for membership approval/sync, `4` temporarily unavailable, `1` terminal or
-incompatible. Diagnostics contain no credentials or message bodies. Local
-`status` and offline `reconcile --deep` retain their previous behavior.
+Use these commands only for the corresponding situation:
 
-The isolated test suite covers staged selectors, interrupted publication,
-partial-stop restoration, rollback with legacy selectors, conflicting edits,
-desktop setup/resume, identity/grant/application-name mismatch, membership roles,
-home ambiguity, MCP filtering and the pinned HTTP MCP contract. A real Hermes
-subprocess test verifies plugin discovery and automation exit codes in a temporary
-profile without credentials. Native tests cover private subprocess channels, schema/exit
-validation, receipt recovery, pending invitations, repeated later joins, exact grants,
-reported HTTP MCP, and generated-key precedence. Reviewed-binary smoke uses only
-capabilities/help/parse paths. These checks do not establish real
-service installation, account creation, sync or remote membership approval. Real
-CLI/desktop acceptance runs remain necessary against a selected supported build.
+| Situation | Action |
+| --- | --- |
+| Interrupted setup, deferred settings or approved invitation | `hermes anytype setup --resume` |
+| Check an already saved connection | `hermes anytype doctor --json` |
+| Inspect chat health and receipt counts | `hermes anytype status` |
+| Abandon a candidate that has not been saved | `hermes anytype setup --cancel` |
+| Restore settings from before a saved attempt | `hermes anytype setup --rollback` |
+| Add a space after initial setup | `hermes anytype join` |
+
+Cancellation does not undo created accounts, memberships, services or keys.
+Rollback can be refused if configuration changed or the previous connection
+cannot be verified. Follow the reported action rather than deleting setup state.
+For desktop/external mode, join the space in the owning client before running
+`join`. Restart the gateway after adding a space covered by its grant; space
+enumeration happens at startup. See [joining details](SETUP_REFERENCE.md#resume-and-joining)
+for grant or discovery changes.
+
+An HTTP 401 means the saved credential was rejected: check the key and API
+address, then run setup to repair the existing connection. A membership warning
+requires editor access or higher in each selected space, even with a readwrite
+key. Missing API routes require an updated Anytype build. Keep the profile's
+`anytype/state.sqlite3` when upgrading or repairing.
+
+For scripts and custom grants, use the [automation input reference](SETUP_REFERENCE.md#automation-input).
+It covers private credential files, publication controls and exit codes.
+[Test evidence and remaining live checks](VALIDATION.md) are recorded separately.
