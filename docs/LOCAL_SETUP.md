@@ -1,5 +1,80 @@
 # Local deployment
 
+Historical deployment log. These entries describe earlier installed versions, not
+the current installation. Version 0.6 uses stock Hermes; see [setup](SETUP.md) and
+[compatibility](../README.md#hermes-compatibility). This migration did not update or
+restart the installed gateway.
+
+Updated to **0.5.1** on 2026-10-09. The plugin now bundles the 287-word Anytype
+workflow skill, registered as `anytype-platform:anytype`, and asks the agent to
+load it for research, task management and Anytype object work. Four review lenses
+completed; the research-loading trigger gap was corrected and rechecked.
+
+All **114 plugin tests passed**, including real Hermes discovery, listing and
+loading of the skill. All 23 installed files match the final archive. Gateway
+PID 25283 is running with Anytype and Telegram connected. No core, configuration
+or credential changes and no backups were needed. Records are under
+`.runtime/bundled-skill-20261009/`. Model adherence to the skill remains a live
+conversation acceptance check.
+
+Updated to **0.5.0** on 2026-10-09. Structured tool activity now uses Hermes's
+public pre/post tool hooks and final-turn hook. Routine status uses the optional
+adapter status sink; native typing stays enabled. The obsolete activity bridge
+was removed from Hermes core and its patch removed from the installed package.
+The delivery/receipt patch remains unchanged across its five core files.
+
+All **114 plugin tests and 113 selected Hermes gateway tests passed** in an
+isolated checkout with only the recovery patch. The 22 package files were
+verified after installation. The managed gateway restarted as PID 56796, with
+Anytype and Telegram connected. Configuration, credentials, MCP and transport
+state were preserved; no backups were created. No synthetic live activity or
+messages were posted. Records are under `.runtime/tool-hooks-20261009/`.
+
+Updated to 0.4.1 on 2026-10-09. Anytype now consumes Hermes's native status text
+through its typing refresh and Heart `/status`. The generic label shows elapsed
+time after 30 seconds; structured tool calls retain their own refresh and terminal
+updates. `display.platforms.anytype.long_running_notifications: false` disables
+the separate persistent Working messages, with `live_status: full` and
+`tool_progress: off` effective. No new core patches or backups were needed.
+
+All **101 plugin tests passed** against the matching Hermes `1ac3f97f` code.
+The 21 installed package files match the archive. The managed restart completed
+with gateway PID 49918 running and both Anytype and Telegram connected. No
+synthetic live messages or activities were published; client rendering remains
+the live conversation check. Installation and verification records are under
+`.runtime/native-status-20261009/`.
+
+Updated to 0.4.0 on 2026-10-07: `discovery.spaces: all` now performs one complete
+space listing at gateway startup, with independent chat/search streams afterward.
+Restart Hermes after adding or granting another space. Installed on the same
+Hermes `1ac3f97f` with the existing core hooks, following 98 passing plugin tests.
+No backup was created. The managed restart verified all four spaces connected,
+14 discovered chats/discussions, 59 creator-owned objects, and Telegram connected.
+Sender/admin allowlists, pinned chats, home, MCP, and state remain unchanged.
+
+Installed and enabled on 2026-10-07 (Europe/Berlin): plugin 0.3.0 on Hermes
+`1ac3f97fbe0958aa2743c0c26202b20b3b4e760e` (0.21.5). Restored the existing generic
+delivery and activity patches after the Hermes update. No backup was created,
+as requested. All 90 plugin and 113 selected Hermes gateway regression tests
+passed against an isolated copy of this commit with freshly locked dependencies.
+
+Single-space discovery is enabled for the existing Hermes space, with
+`watch_agent_objects: true` and `response: all`. The two pinned chats, home channel,
+sender/admin allowlists, credentials, MCP configuration, and state database were
+preserved. Shared discussion sessions use `thread_sessions_per_user: false`;
+ordinary group sessions keep the previous setting. The managed gateway was
+restarted and reports Anytype and Telegram connected. Discovery initialized with
+2 pinned chats and 34 creator-owned objects. A real new-chat/discussion mention
+remains the user-facing acceptance check.
+
+Reinstalled after the Hermes update on 2026-09-30: plugin 0.2.1, runtime commit
+`653bc4f288fc00db362c1082a3b652542314fbef`, managed Python 3.14.7. The restored core
+uses `hermes-delivery-context-653bc4f.patch` and the existing activity patch.
+Backup: `/Users/roma/.hermes/backups/anytype-reinstall-20260930T170215Z`, containing
+the pre-reinstall core files, plugin and configuration. Credentials, routing and
+the Anytype state database were retained. Validation: 51 plugin tests and 113
+Hermes gateway regression tests passed in an isolated current-version checkout.
+
 Activity update, 2026-09-25: version 0.2.0 adds ephemeral thinking and tool-call
 status, enabled by `gateway.platforms.anytype.extra.activity_status`. It requires
 the additional generic `hermes-activity-callbacks.patch`. The replacement API key

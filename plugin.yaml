@@ -1,10 +1,11 @@
 name: anytype-platform
 label: Anytype
 kind: platform
-version: 0.2.0
-description: Anytype API v2 chat transport for Hermes, with native object links and attachments.
-requires_env:
-  - name: ANYTYPE_API_KEY
-    description: API key for the Anytype account used by Hermes
-    prompt: Anytype API key
-    password: true
+version: 0.6.0
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - post_llm_call
+description: Anytype API v2 multi-space chat and discussion transport, with startup space discovery and creator-based watches.
+# Setup is discoverable before credentials exist. Runtime validates extra.api_key_env
+# (legacy default ANYTYPE_API_KEY) through the owning profile's secret scope.

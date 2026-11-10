@@ -1,0 +1,234 @@
+--- a/gateway/delivery_ledger.py
++++ b/gateway/delivery_ledger.py
+@@ -13,6 +13,7 @@
+ from __future__ import annotations
+ 
+ import hashlib
++import json
+ import logging
+ import os
+ import re
+@@ -206,6 +207,7 @@
+     )
+     if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
+         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
++    add_column_if_missing(conn, "delivery_obligations", "delivery_context", "delivery_context TEXT")
+ 
+ 
+ def _transaction():
+@@ -268,7 +270,8 @@
+ 
+ 
+ def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
+-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
++                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
++                      delivery_context: Optional[dict] = None) -> None:
+     """Record a final response as owed to the platform (state='pending')."""
+     now, (pid, started) = time.time(), _owner_stamp()
+     with _DB_LOCK, _transaction() as conn:
+@@ -276,10 +279,11 @@
+             """INSERT OR REPLACE INTO delivery_obligations
+                (obligation_id, session_key, platform, chat_id, thread_id,
+                 content, state, attempts, created_at, updated_at,
+-                owner_pid, owner_started_at, adapter_profile)
+-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
++                owner_pid, owner_started_at, adapter_profile, delivery_context)
++               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)""",
+             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
+-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
++             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default",
++             json.dumps(delivery_context) if delivery_context is not None else None))
+         # Same transaction, same connection: the cron ledgers prune this way too
+         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
+         _prune_unlocked(conn, now)
+@@ -443,6 +447,7 @@
+                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
+                                             adapter_profile or "default",
+                                             needs_marker=state != "pending" or attempts > 0, flood=flood_row))
++        _attach_delivery_context(conn, claimed)
+     return claimed
+ 
+ 
+@@ -502,7 +507,16 @@
+                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
+                                             attempts, adapter_profile, needs_marker=True, runtime=True,
+                                             flood=is_flood_error(last_error), last_error=last_error))
++        _attach_delivery_context(conn, claimed)
+     return claimed
++
++
++def _attach_delivery_context(conn, rows):
++    for row in rows:
++        value = conn.execute("SELECT delivery_context FROM delivery_obligations WHERE obligation_id=?",
++                             (row["obligation_id"],)).fetchone()
++        if value and value[0] is not None:
++            row["delivery_context"] = json.loads(value[0])
+ 
+ 
+ def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -1771,6 +1771,8 @@
+         # A photo burst always absorbs; otherwise merge only when media is involved on either
+         # side. Captions merge in every absorbing case.
+         if both_photo or existing.media_urls or incoming_has_media:
++            existing.ingress_message_ids = list(dict.fromkeys(
++                existing.ingress_message_ids + event.ingress_message_ids))
+             if both_photo or incoming_has_media:
+                 existing.media_urls.extend(event.media_urls)
+                 existing.media_types.extend(event.media_types)
+@@ -1790,6 +1792,8 @@
+             return
+         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
+         if merge_text and both_text:
++            existing.ingress_message_ids = list(dict.fromkeys(
++                existing.ingress_message_ids + event.ingress_message_ids))
+             if event.text:
+                 existing.text = _append_text(existing.text, event.text)
+             existing.absorb_reply_expected(event)
+@@ -3549,6 +3553,20 @@
+         return response.text, int(ttl or 0)
+ 
+     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
++        tracked = bool(event.ingress_message_ids)
++        if tracked:
++            await self._run_processing_hook("on_processing_start", event)
++        try:
++            result = await self._dispatch_inline_reply_body(event, log_cmd=log_cmd)
++        except BaseException:
++            if tracked:
++                await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
++            raise
++        if tracked:
++            await self._run_processing_hook("on_processing_complete", event,
++                ProcessingOutcome.FAILURE if result is not None and not result.success else ProcessingOutcome.SUCCESS)
++
++    async def _dispatch_inline_reply_body(self, event: MessageEvent, *, log_cmd: Optional[str] = None):
+         """Call the handler and send its reply inline, with retry, threading and
+         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
+         thread_meta = _thread_metadata_for_event(event)
+@@ -3564,6 +3582,7 @@
+             metadata=_mark_notify_metadata(thread_meta))
+         if eph_ttl > 0 and result.success and result.message_id:
+             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
++        return result
+ 
+     def _media_delivery_scope(self, source: Optional[SessionSource]):
+         """Routed home + terminal policy for post-handler text, media and error delivery;
+@@ -3816,6 +3835,8 @@
+             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
+             store[session_key] = state
+         else:
++            state.event.ingress_message_ids = list(dict.fromkeys(
++                state.event.ingress_message_ids + event.ingress_message_ids))
+             if event.text:
+                 state.event.text = _append_text(state.event.text, event.text)
+             state.event.absorb_reply_expected(event)
+@@ -4173,7 +4194,8 @@
+ 
+     async def _record_delivery_obligation(
+         self, event: MessageEvent, session_key: str, text_content: str,
+-        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool) -> Optional[str]:
++        delivery_adapter: "BasePlatformAdapter", is_ephemeral_response: bool, *,
++        delivery_context: Optional[dict] = None) -> Optional[str]:
+         """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
+         next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
+         or None."""
+@@ -4198,7 +4220,8 @@
+                 platform=str(getattr(source.platform, "value", source.platform)),
+                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
+                 content=text_content,
+-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
++                adapter_profile=getattr(delivery_adapter, "_owner_profile", None),
++                **({"delivery_context": delivery_context} if delivery_context is not None else {}))
+             await asyncio.to_thread(mark_attempting, obligation_id)
+             return obligation_id
+         except Exception:
+@@ -4304,6 +4327,15 @@
+             return
+         record_delivery(result)
+ 
++    def get_delivery_context(self, *, reply_to: Optional[str], metadata: Optional[dict]) -> Optional[dict]:
++        """Opt into exact-content replay with a stable delivery_id in send metadata.
++
++        Return a JSON-serializable {reply_to, metadata} transport context, without credentials,
++        or None to retain legacy recovered-marker behavior. An opting-in adapter owns ambiguity
++        handling and persists per-operation remote receipts; the gateway still schedules retries.
++        """
++        return None
++
+     async def send_final_ledgered(
+         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
+         reply_to: Optional[str], is_ephemeral_response: bool = False,
+@@ -4318,8 +4350,12 @@
+         delivery_adapter = self._final_delivery_adapter(event.source)
+         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                     len(text_content), event.source.chat_id)
++        delivery_context = delivery_adapter.get_delivery_context(reply_to=reply_to, metadata=metadata)
+         obligation_id = await self._record_delivery_obligation(
+-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
++            event, session_key, text_content, delivery_adapter, is_ephemeral_response,
++            **({"delivery_context": delivery_context} if delivery_context is not None else {}))
++        if delivery_context is not None and obligation_id is not None:
++            metadata = {**(metadata or {}), "delivery_id": obligation_id}
+         if obligation_id is not None:
+             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
+         result = await delivery_adapter._send_with_retry(
+--- a/gateway/platforms/event.py
++++ b/gateway/platforms/event.py
+@@ -93,6 +93,10 @@
+     # fallback, like True.
+     reply_expected: Optional[bool] = None
+ 
++    # Original transport messages consumed by this event, retained across pending merges/redirects.
++    # Opt-in adapters use these in lifecycle hooks to finish durable input receipts.
++    ingress_message_ids: List[str] = field(default_factory=list)
++
+     # Process-local admission receipt, never routing metadata or execution acknowledgement.
+     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -443,8 +443,15 @@
+             if row.get("needs_marker"):
+                 content = row.get("marker", RECOVERED_MARKER) + content
+             metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
++            send_kwargs = {}
++            if row.get("delivery_context") is not None:
++                context = row["delivery_context"]
++                content = row["content"]
++                metadata = {**context.get("metadata", {}), "delivery_id": row["obligation_id"],
++                            "delivery_recovery": True}
++                send_kwargs["reply_to"] = context.get("reply_to")
+             try:
+-                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
++                result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata, **send_kwargs)
+             except Exception as send_err:
+                 logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
+                 result = None
+--- a/gateway/run_busy.py
++++ b/gateway/run_busy.py
+@@ -646,7 +646,13 @@
+         try:
+             call_text = self._steer_text_with_origin(text, event) if event else text
+             if verb == "steer":
+-                return self._steer_running_agent(running_agent, call_text)
++                accepted = self._steer_running_agent(running_agent, call_text)
++                if accepted and event is not None and event.ingress_message_ids:
++                    turn = self._session_state(session_key).turn
++                    if turn.agent is running_agent and turn.event is not None:
++                        turn.event.ingress_message_ids = list(dict.fromkeys(
++                            turn.event.ingress_message_ids + event.ingress_message_ids))
++                return accepted
+             return bool(getattr(running_agent, verb)(call_text))
+         except Exception as exc:
+             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
+@@ -670,6 +676,8 @@
+         if turn.event is not None and turn.event is not event:
+             turn.event.reply_anchor_override = anchor
+             turn.event.ledger_message_id = inbound_id
++            turn.event.ingress_message_ids = list(dict.fromkeys(
++                turn.event.ingress_message_ids + event.ingress_message_ids))
+         if turn.ctx is not None:
+             turn.ctx.event_message_id = anchor
+             turn.ctx.inbound_message_id = inbound_id

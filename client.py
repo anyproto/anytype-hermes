@@ -81,7 +81,7 @@ def retry_seconds(value):
 class Client:
     def __init__(self, base_url, token, *, transport=None):
         if not token:
-            raise ValueError('ANYTYPE_API_KEY is required')
+            raise ValueError('The selected Anytype API credential is required')
         self.http = httpx.AsyncClient(
             base_url=base_url, headers={'Authorization': f'Bearer {token}'},
             timeout=httpx.Timeout(30, connect=10), follow_redirects=False,
@@ -89,6 +89,7 @@ class Client:
         )
         self._write_lock = asyncio.Lock()
         self._last_write = 0.0
+        self.target_allowed = None
 
     async def close(self):
         await self.http.aclose()
@@ -97,11 +98,13 @@ class Client:
     def chat_path(target):
         return f'/v2/spaces/{quote(target.space_id, safe="")}/chats/{quote(target.chat_id, safe="")}/messages'
 
-    async def request(self, method, path, *, body=None, key=None, params=None):
+    async def request(self, method, path, *, body=None, key=None, params=None, allowed=None):
         headers = {'Idempotency-Key': key} if key else None
         if method != 'GET':
             async with self._write_lock:
                 await asyncio.sleep(max(0, self._last_write + 1 - time.monotonic()))
+                if allowed is not None and not allowed():
+                    raise APIError(403)
                 self._last_write = time.monotonic()
                 response = await self.http.request(method, path, json=body, headers=headers, params=params)
         else:
@@ -116,10 +119,10 @@ class Client:
             raise ProtocolError('Expected a JSON object')
         return result
 
-    async def rows(self, path):
+    async def rows(self, path, **params):
         offset = 0
         while True:
-            page = await self.request('GET', path, params={'offset': offset, 'limit': 100})
+            page = await self.request('GET', path, params={**params, 'offset': offset, 'limit': 100})
             rows = page.get('data', [])
             if not isinstance(rows, list):
                 raise ProtocolError('Invalid paginated response')
@@ -135,7 +138,8 @@ class Client:
         return await self.request('GET', self.chat_path(target), params={'limit': 1000, **params})
 
     async def send(self, target, body, key):
-        result = await self.request('POST', self.chat_path(target), body=body, key=key)
+        result = await self.request('POST', self.chat_path(target), body=body, key=key,
+                                    allowed=lambda: self.target_allowed is None or self.target_allowed(target.key))
         if not isinstance(result.get('id'), str) or not result['id']:
             raise ProtocolError('Send response lacks a message ID')
         return result['id']
@@ -145,6 +149,8 @@ class Client:
         encoded = encode_payload(payload)
         if len(encoded) > 65_508:
             raise ValueError('Activity payload exceeds the pubsub byte limit')
+        if self.target_allowed is not None and not self.target_allowed(target.key):
+            raise APIError(403)
         # Heart's limiter remains authoritative. Activity must not occupy the chat-send
         # pacing lock; independent calls need two-second refreshes. Do not deduplicate refreshes.
         response = await self.http.post(
@@ -165,6 +171,31 @@ class Client:
             if 'text/event-stream' not in response.headers.get('Content-Type', ''):
                 raise ProtocolError('Expected an SSE stream')
             async for frame in parse_sse(response.aiter_lines()):
+                yield frame
+
+    async def subscription(self, space, *, search=None):
+        """Heart subscriptions reconnect with snapshots, never Last-Event-ID.
+
+        POST search is a read and must not hold the mutation pacing lock.
+        """
+        path = f'/v2/spaces/{quote(space, safe="")}'
+        params = {'heartbeat': 30, 'ids': 'full'}
+        if search is None:
+            path += '/chats/stream'
+            params['include'] = 'discussions'
+        else:
+            path += '/search/stream'
+        async with self.http.stream(
+            'GET' if search is None else 'POST', path, json=search, params=params,
+            timeout=httpx.Timeout(75, connect=10),
+        ) as response:
+            if response.status_code != 200:
+                raise APIError(response.status_code, retry_seconds(response.headers.get('Retry-After')))
+            if 'text/event-stream' not in response.headers.get('Content-Type', ''):
+                raise ProtocolError('Expected an SSE subscription')
+            async for frame in parse_sse(response.aiter_lines()):
+                if frame.id is not None:
+                    raise ProtocolError('Snapshot subscription unexpectedly carries a resume ID')
                 yield frame
 
 

@@ -1,6 +1,90 @@
 # Anytype gateway for Hermes — implementation specification
 
-Version: 0.2 · 2026-09-25 · Status: chat activity implemented; see validation record for live checks
+Version: 0.6.0 · 2026-11-10 · Target: stock Hermes ec324991
+
+## 0.6 addendum: stock Hermes recovery
+
+Ship without core patches. The original patched implementation is preserved at
+`02555cd`. This addendum and the revised §7 supersede the earlier requirement for
+per-input execution completion and exact-payload restart recovery. Keep history
+catch-up, discovery, deduplication and the native tool-activity hooks unchanged.
+Processing hooks manage activity only; they do not settle input receipts.
+
+## 0.5.1 addendum: bundled workflow skill
+
+Register `skills/anytype/SKILL.md` through `ctx.register_skill` as
+`anytype-platform:anytype` and include it in the release archive. The platform
+hint asks the agent to load it for research, task management or Anytype object work; retain essential space
+and delivery rules in the hint. The read-only skill provides compact guidance
+for MCP searches, research, tasks, parent context, links and scheduled jobs.
+It does not configure MCP or automatically enter the system prompt skill index.
+
+## 0.5 addendum: public tool hooks
+
+Replace the generic activity callback patch with plugin registrations for
+`pre_tool_call`, `post_tool_call`, and `post_llm_call`. Bind the publisher and
+full space/chat target in the adapter's processing-start hook using a ContextVar;
+Hermes copies it into agent and plugin workers. Hook callbacks only enqueue
+observer work and return None; they never modify arguments, policy, or results.
+
+Correlate by session/turn plus model request/call identity, generating fresh Heart
+IDs per execution. Pre-tool labels say `Preparing <tool>` because approval and
+policy checks may still be pending. Respect terminal outcomes including blocked,
+cancelled and timeout, even without a start. Close unfinished rows on the final
+turn hook and processing completion; reject late updates from closed bindings.
+Exclude delegated child tools, muted diagnostic turns and unrelated CLI/cron work.
+
+Route routine callbacks through the optional `send_or_update_status` adapter sink;
+warnings use normal message delivery. Native typing stays unchanged. The release
+package contains no core patches. Version 0.6 uses the stock recovery contract in §7.
+
+## 0.4.1 addendum: native status instead of Working messages
+
+Advertise Hermes's `supports_status_text` capability and consume its per-chat
+`set_status_text` value through the existing typing refresh and Heart `/status`
+publisher. Use a monotonic elapsed timer per full space/chat key; show elapsed
+time in the fallback label after 30 seconds and reset it when typing ends.
+Running structured tool executions retain priority and explicit terminal updates.
+Native text is redacted and bounded through the same activity publisher.
+
+Register the low display tier and explicitly configure
+`display.platforms.anytype.long_running_notifications: false` in deployments with
+global display overrides. This disables Hermes's separate 180-second message
+timer. Native status remains independent of ordinary tool-progress messages.
+No text matching in `send()` and no additional Hermes core patch are required.
+
+## 0.4 addendum: discover accessible spaces at startup
+
+`extra.discovery.spaces: all` lists all accessible spaces once per gateway connect,
+using full IDs and complete pagination. Each space has its own member mapping,
+snapshot readiness, chat/search subscriptions, recovery, and suspension. New grants
+and spaces are picked up on restart; there is no periodic space-list poll or global
+stream dependency. The existing `space_id` selector remains supported.
+
+Preserve the account allowlist, pinned chats, home, and receipt namespaces. Scope
+targets/sessions by full space plus chat IDs. Use origin delivery by default for
+jobs outside the configured home's space. This adds transport coverage, not
+per-collaborator restrictions on MCP, memory, or cross-space output. Current Heart
+limits cap this mode at 16 spaces. See README for bootstrap and recovery semantics.
+
+## 0.3 addendum: single-space multi-chat discovery
+
+The optional `extra.discovery.space_id` enables Heart's space-wide chat stream
+and creator-filtered search stream from `go-0000-search-stream`. The branch's
+implemented contract supersedes earlier proposals for structured mention fields
+and global resume cursors: parse canonical mention markup, reconcile complete
+snapshots, and recover additions through bounded paginated REST history using
+per-message creation `state_id` checkpoints. Never acknowledge counter snapshots.
+
+Persist independent pinned, mention, and creator-based watches. Preserve the
+first comment across search/chat ordering, revalidate precommit messages through
+REST, and supply bounded parent context at admission. Discussion sessions use
+Hermes thread settings; sends use the actual discussion chat ID and validated
+matching thread metadata. The existing text, attachment, status, and durable
+delivery contracts below remain in force. Automatic multi-space discovery and
+worker isolation are not included. See [README.md](README.md) for configuration
+and recovery limits, and [the implementation plan](docs/MULTICHAT_IMPLEMENTATION_PLAN.md)
+for the reviewed design and checks.
 
 ## 0.2 addendum: ephemeral chat activity
 
@@ -27,7 +111,7 @@ refreshes: each refresh must publish even though its tool execution ID stays fix
 
 This specifies a standalone Hermes platform plugin, `anytype`, backed by Anytype API v2. The gateway receives chat events through HTTP Server-Sent Events (SSE) and posts ordinary Hermes replies through REST. The official local Anytype MCP server gives the agent tools for working with the space.
 
-This document defines the intended behavior. See [README.md](README.md) for the implementation, required generic Hermes patch and current limitations, and [docs/VALIDATION.md](docs/VALIDATION.md) for completed and pending checks. [RESEARCH.md](RESEARCH.md) contains the source investigation. This specification takes precedence over its exploratory proposals. [hermes.example.yaml](hermes.example.yaml) contains the combined configuration, with placeholders instead of credentials.
+This document defines the intended behavior. See [README.md](README.md) for the implementation, stock Hermes compatibility and current limitations, and [docs/VALIDATION.md](docs/VALIDATION.md) for completed and pending checks. [RESEARCH.md](RESEARCH.md) contains the source investigation. This specification takes precedence over its exploratory proposals. [hermes.example.yaml](hermes.example.yaml) contains the combined configuration, with placeholders instead of credentials.
 
 ## 1. Product contract
 
@@ -83,7 +167,7 @@ flowchart LR
 
 Use `BasePlatformAdapter`, `build_source()`, and `handle_message()`. Do not instantiate an agent directly. Register `Platform("anytype")` through `register(ctx)` and `ctx.register_platform(...)`; do not add Anytype branches to Hermes core.
 
-Target an external plugin installed in the owning Hermes profile. Reuse scoped secret helpers and `get_hermes_home()`. Do not write process-wide environment variables to select a profile. A missing generic lifecycle/delivery facility may require a separate Hermes change; the compatibility spike in §9 decides that before recovery guarantees are declared complete.
+Target an external plugin installed in the owning Hermes profile. Reuse scoped secret helpers and `get_hermes_home()`. Do not write process-wide environment variables to select a profile. Use the existing platform interfaces and the limited recovery contract in §7; do not introduce a core patch.
 
 ## 3. Configuration and identity
 
@@ -234,13 +318,29 @@ Keep compact processed-ID receipts for the configured chat's lifetime; terminal 
 
 ### Turn and delivery semantics
 
-`handle_message()` admission is not completed execution. Track queued/processing/completed/cancelled inputs through real Hermes lifecycle and recovery mechanisms. Multiple ingress IDs merged into one turn must retain their terminal outcomes. On restart, reconcile an interrupted turn with Hermes before re-dispatching it: re-running a tool-bearing request can duplicate object creation. Unresolvable interrupted work must be visible as uncertain, not blindly replayed.
+Persist `handing_off` before calling `handle_message()`, then `handed_off` on
+normal return. This records a handoff attempt, not durable Hermes admission or
+successful execution. It covers commands, merged inputs and queued inputs without
+tracking Hermes's internal turn composition. Processing hooks manage activity only.
+An interrupted/failed handoff becomes `uncertain` and is never independently
+replayed. On restart, migrate legacy `dispatched`/`processing` to `uncertain` and
+preserve terminal receipts and discovery checkpoints. A crash in the handoff gap
+can lose a request before Hermes durably admits it; report uncertainty rather than
+rerunning possible MCP side effects. Only never-handed-off pending inputs are retried.
 
-Reuse a persisted `Idempotency-Key` and the exact same payload for retries of one logical mutation. Each chunk is a separate operation. A changed body is a new operation. A content hash alone is not a logical ID: two different requests may correctly receive identical answers.
+For an anchored outgoing reply, persist each chunk's payload and idempotency key
+and reuse them on immediate retries; skip chunks with a recorded API receipt.
+A timeout or ambiguous POST must not trigger Hermes's immediate plain-text fallback.
+Unanchored partial delivery must not silently resend the already-visible head.
+Independent standalone calls get distinct operation IDs, even for identical text.
 
-Anytype's inspected idempotency cache is bounded and in-memory. If a POST committed but its response was lost, a server restart/cache eviction can make a retry duplicate the reply. Use local receipts and recent bot-authored history for reconciliation; matching text alone is insufficient proof. An unresolved ambiguous delivery becomes a visible reconciliation state rather than an unqualified success or blind retry loop.
-
-The release promises durable local admission, replay deduplication, and recoverable delivery attempts. It does **not** promise exactly-once agent execution, exactly-once MCP side effects, or exactly-once remote chat delivery across arbitrary crashes.
+Hermes alone schedules delayed/restart recovery of final replies. Its stock ledger
+preserves text, chat, thread and transport profile, but not the exact reply anchor,
+explicit attachments or our operation ID. Its marked recovery is a new operation
+and may duplicate a prior reply. Keep the old uncertain operation visible. Inline
+object links survive and may produce previews again; explicit metadata-only
+attachments may be absent. Do not claim exact-payload or exactly-once recovery.
+Anytype's server idempotency cache is bounded and in memory.
 
 ## 8. Errors and operation
 
@@ -250,7 +350,7 @@ The release promises durable local admission, replay deduplication, and recovera
 | API offline / transient network failure | Reconnect with bounded backoff; retain pending state |
 | 401/403 | Mark authentication/permission failure; stop rapid retries and expose the affected target |
 | Chat removed or membership lost | Suspend that target; preserve state; keep unaffected targets working |
-| 429 | Respect retry timing and preserve the same operation identity |
+| 429 | Respect retry timing; reuse identity for immediate anchored retries, defer other recovery to Hermes |
 | SSE parse/storage failure | Pause affected ingress; retain last durable checkpoint; expose failure |
 | MCP unavailable | Continue plain chat; report failed object operations accurately |
 | Ambiguous send or unreconciled input | Persist uncertainty and expose it for reconciliation |
@@ -263,14 +363,11 @@ Expose connected/reconnecting/auth_failed/gap_unresolved and pending/uncertain c
 
 Load a minimal plugin through real discovery under a temporary Hermes home. Exercise configuration, canonical member IDs, allowlist/wildcard admission, slash privileges, sessions, and profile routing. Verify that secondary-profile secrets never fall back to another profile.
 
-Resolve two concrete recovery dependencies:
-
-1. **Inbound completion:** prove how normal events, queued/merged/steered inputs, commands and cancelled turns map to durable receipts using existing processing hooks and recovery records. `_gateway_accepted` alone is insufficient.
-2. **Outbound identity and payload:** current `send_final_ledgered()` records a Hermes obligation, but its ID is not passed to `send()`. The ledger retains text/target/thread, not `reply_to` or attachment metadata, and startup redelivery only reconstructs thread metadata. It may also prepend a recovery marker. Prove a supported way to preserve one logical operation and its exact payload across live delivery, retries and restart.
-
-These findings come from the inspected Hermes [adapter base](../hermes-agent/gateway/platforms/base.py), [delivery ledger](../hermes-agent/gateway/delivery_ledger.py), and [startup redelivery](../hermes-agent/gateway/run_startup.py) at commit `aa8a33d22d27973df6591e48f38228274c8ad771`.
-
-Prefer existing hooks. If insufficient, propose the smallest generic Hermes delivery/lifecycle extension with this plugin as its concrete consumer. Do not monkey-patch private methods or silently claim attachment/reply recovery works. The transport prototype can proceed, but durable-release acceptance depends on these checks. Implement one owner of redelivery; the adapter must not race an independent retry loop against Hermes's delivery ledger.
+Validate the stock delivery and handoff contract in §7 using real Hermes adapter,
+queue and ledger code with mocked HTTP. Cover merged/inline handoffs, interrupted
+handoffs, state migration, anchored retries, unanchored partial sends and marked
+boot/runtime recovery. Do not override global core functions or race an independent
+outgoing retry loop against Hermes's delivery ledger.
 
 ### M1 — transport and admission
 
@@ -296,7 +393,7 @@ Suggested files: `plugin.yaml`, `__init__.py`, `adapter.py`, `client.py`, `state
 | Session scope | Two users/two chats do not collide by default; shared-session setting behaves as documented; profile A → B → A retains separate secrets/state |
 | SSE | Fragmented frames, UTF-8 boundaries, id-only cursor, empty chat and duplicate replay handled; non-add events never start turns |
 | Startup/restart | Historical first-setup messages skipped; first new message retained; messages during downtime recovered after adapter recreation and process restart |
-| Recovery | Crash between receipt/cursor/dispatch/completion tested; merged input IDs reconciled; gaps and uncertainty visible; no automatic rerun of uncertain side effects |
+| Recovery | Receipt/cursor/handoff crash boundaries tested; merged and inline inputs retain handoff receipts; stock marked redelivery tested; gaps and uncertainty visible; no plugin rerun of uncertain side effects |
 | Chat payload | Every create body uses `text` and optional `attachments`/`reply_to`, never `blocks` |
 | Formatting | Emoji beyond BMP, escaped titles/brackets, long replies, object/collection links and chunk boundaries work without truncation |
 | Attachments | Same-space ordinary object, collection and existing file/image IDs accepted; cross-space links retained without invalid attachments; attachment-only input preserved |

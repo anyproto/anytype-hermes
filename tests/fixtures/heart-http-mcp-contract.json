@@ -1,0 +1,79 @@
+{
+  "source": {
+    "repository": "https://github.com/anyproto/anytype-heart",
+    "commit": "92ed13917ebb",
+    "file": "core/api/wrapper/full/testdata/tools_list.golden.json",
+    "sha256": "f118bd00d403f12b2c61ab0da5773d052ae6c99bafc51165c757bd8ac817ed13"
+  },
+  "tool_names": [
+    "list_schemas",
+    "get_op_schema",
+    "get_schema",
+    "search_global",
+    "list_spaces",
+    "create_space",
+    "get_space",
+    "update_space",
+    "list_chats",
+    "create_chat",
+    "get_chat_messages",
+    "add_chat_message",
+    "edit_chat_message",
+    "delete_chat_message",
+    "toggle_chat_reaction",
+    "read_chat",
+    "create_collection",
+    "get_collection_objects",
+    "get_collection_views",
+    "upload_file",
+    "list_members",
+    "get_member_me",
+    "list_objects",
+    "create_object",
+    "get_object",
+    "patch_object",
+    "delete_object",
+    "create_discussion",
+    "list_properties",
+    "create_property",
+    "update_property",
+    "delete_property",
+    "list_property_options",
+    "create_query",
+    "get_query_objects",
+    "get_query_views",
+    "search_space",
+    "list_templates",
+    "create_template",
+    "list_types",
+    "create_type",
+    "get_type",
+    "update_type",
+    "delete_type",
+    "list_widgets",
+    "create_widget",
+    "update_widget",
+    "delete_widget",
+    "validate"
+  ],
+  "get_member_me": {
+    "name": "get_member_me",
+    "description": "Get the current member. The identity is taken from the account this API runs against; there is no member id to send.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "space_id": {
+          "description": "Space id, from list_spaces",
+          "type": "string"
+        }
+      },
+      "required": [
+        "space_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  }
+}

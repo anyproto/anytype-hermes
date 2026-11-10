@@ -1,25 +1,21 @@
 #!/usr/bin/env bash
+# Prepare stock Hermes without modifying the source checkout or applying patches.
 set -euo pipefail
 TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DIR="${1:-$TASK_ROOT/../hermes-agent}"
-DEV_DIR="$TASK_ROOT/.dev"
-if [ ! -d "$DEV_DIR/gateway" ]; then
-  mkdir -p "$DEV_DIR"
-  git -C "$SOURCE_DIR" archive HEAD | tar -x -C "$DEV_DIR"
-  git -C "$SOURCE_DIR" rev-parse HEAD > "$DEV_DIR/UPSTREAM_COMMIT"
-  git -C "$DEV_DIR" init -q
-fi
-for PATCH_NAME in hermes-delivery-context.patch hermes-activity-callbacks.patch; do
-  PATCH_FILE="$TASK_ROOT/patches/$PATCH_NAME"
-  if git -C "$DEV_DIR" apply --reverse --check "$PATCH_FILE" 2>/dev/null; then
-    echo "Isolated Hermes checkout already has $PATCH_NAME."
-  else
-    git -C "$DEV_DIR" apply --check "$PATCH_FILE"
-    git -C "$DEV_DIR" apply "$PATCH_FILE"
-    echo "Applied $PATCH_NAME to the isolated checkout."
+DEV_DIR="${2:-$TASK_ROOT/.dev}"
+SOURCE_SHA="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
+if [ -e "$DEV_DIR" ]; then
+  DEV_ROOT="$(git -C "$DEV_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ "$DEV_ROOT" != "$(cd "$DEV_DIR" && pwd -P)" ] ||
+     [ "$(git -C "$DEV_DIR" rev-parse HEAD 2>/dev/null || true)" != "$SOURCE_SHA" ] ||
+     [ -n "$(git -C "$DEV_DIR" status --porcelain --untracked-files=normal)" ]; then
+    echo "Existing checkout is modified or uses another revision: $DEV_DIR" >&2
+    echo "Pass a fresh destination as the second argument; existing work is preserved." >&2
+    exit 1
   fi
-done
-# The canonical runner uses tracked Python paths for its bytecode preparation.
-git -C "$DEV_DIR" add gateway/delivery_ledger.py gateway/platforms/base.py \
-  gateway/platforms/event.py gateway/run_startup.py gateway/run_busy.py \
-  gateway/activity_callbacks.py gateway/run_turn_runner.py
+else
+  git clone --shared --no-checkout "$SOURCE_DIR" "$DEV_DIR"
+  git -C "$DEV_DIR" checkout --detach "$SOURCE_SHA"
+fi
+echo "Stock Hermes $SOURCE_SHA ready at $DEV_DIR (no patches)."

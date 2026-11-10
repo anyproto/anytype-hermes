@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-import yaml
 
 from anytype_plugin.adapter import AnytypeAdapter
 from anytype_plugin.client import Client, Frame
@@ -30,7 +29,7 @@ def test_cron_home_delivery_uses_configured_chat(isolated_home, origin):
         'platform': 'anytype', 'chat_id': 'space.full/home', 'name': 'Hermes Home',
     }
     platform['extra']['chats'].append({'space_id': 'space.full', 'chat_id': 'home'})
-    (isolated_home / 'config.yaml').write_text(yaml.safe_dump({
+    (isolated_home / 'config.yaml').write_text(json.dumps({
         'plugins': {'enabled': ['anytype-platform']},
         'gateway': {'platforms': {'anytype': platform}},
     }))
@@ -136,44 +135,84 @@ async def test_sse_only_additions_trigger_and_cursor_is_durable(tmp_path):
     await adapter.disconnect()
 
 
-async def test_merged_inputs_receive_terminal_outcomes(tmp_path):
+async def test_merged_inputs_track_handoff_without_claiming_execution(tmp_path):
     adapter = await adapter_ready(tmp_path)
     target = adapter.settings.targets[0]
-    events = []
-    for id in ('a', 'b'):
-        m = message(id)
-        await adapter._record(target, m)
-        events.append(adapter._event(target, m))
     queue = {}
-    for event in events:
+
+    async def enqueue(event):
         merge_pending_message_event(queue, 'session', event, merge_text=True)
+
+    adapter.handle_message = enqueue
+    for id in ('a', 'b'):
+        m = message(id, text=id)
+        await adapter._record(target, m)
+        await adapter._handoff(adapter._event(target, m))
     merged = queue['session']
-    assert merged.ingress_message_ids == ['a', 'b']
+    assert 'a' in merged.text and 'b' in merged.text
+    assert {r['message_id'] for r in adapter.store.inputs(['handed_off'])} == {'a', 'b'}
+    assert adapter.store.pending_count() == 0
     await adapter.on_processing_start(merged)
-    await adapter.on_processing_complete(merged, ProcessingOutcome.SUCCESS)
-    assert len(adapter.store.inputs(['completed'])) == 2
+    await adapter.on_processing_complete(merged, ProcessingOutcome.FAILURE)
+    adapter.store.recover_inputs()
+    for id in ('a', 'b'):
+        await adapter._record(target, message(id))
+    assert len(adapter.store.inputs(['handed_off'])) == 2
+    assert not adapter.store.inputs(['pending', 'completed', 'uncertain'])
+    await adapter.disconnect()
+
+
+@pytest.mark.parametrize('error', [RuntimeError('handoff failed'), asyncio.CancelledError()])
+async def test_interrupted_handoff_is_uncertain_and_never_replayed(tmp_path, error):
+    adapter = await adapter_ready(tmp_path)
+    target = adapter.settings.targets[0]
+    await adapter._record(target, message())
+    adapter.handle_message = AsyncMock(side_effect=error)
+    event = adapter._event(target, message())
+    if isinstance(error, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._handoff(event)
+    else:
+        await adapter._handoff(event)
+    adapter.store.recover_inputs()
+    await adapter._record(target, message())
+    assert not adapter.store.inputs(['pending'])
+    assert adapter.store.receipt(target.key, 'in1')['status'] == 'uncertain'
+    adapter.handle_message = AsyncMock()
+    await adapter._record(target, message('next'))
+    await adapter._handoff(adapter._event(target, message('next')))
+    assert adapter.store.receipt(target.key, 'next')['status'] == 'handed_off'
     await adapter.disconnect()
 
 
 def test_real_plugin_discovery_and_yaml_loading(isolated_home):
-    from hermes_cli.plugins import PluginManager
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
     from gateway.config import load_gateway_config
     from gateway.platform_registry import platform_registry
+    from tools.skills_tool import skills_list, skill_view
     root = Path(__file__).resolve().parents[1]
     plugins = isolated_home / 'plugins'
     plugins.mkdir()
     (plugins / 'anytype-platform').symlink_to(root, target_is_directory=True)
-    (isolated_home / 'config.yaml').write_text(yaml.safe_dump({
+    (isolated_home / 'config.yaml').write_text(json.dumps({
         'plugins': {'enabled': ['anytype-platform']},
         'gateway': {'platforms': {'anytype': {'enabled': True, 'extra': config().extra}}},
     }))
-    manager = PluginManager()
-    manager.discover_and_load()
+    discover_plugins()
+    manager = get_plugin_manager()
     assert manager._plugins['anytype-platform'].enabled, manager._plugins['anytype-platform'].error
     entry = platform_registry.get('anytype')
     assert entry and entry.standalone_sender_fn
     loaded = load_gateway_config()
     assert loaded.platforms[Platform('anytype')].extra['chats'] == config().extra['chats']
+    listed = json.loads(skills_list())
+    skill = next(s for s in listed['skills'] if s['name'] == 'anytype-platform:anytype')
+    assert skill['description']
+    viewed = json.loads(skill_view(name=skill['name']))
+    assert viewed['success'] and viewed['name'] == skill['name']
+    skill_path = root / 'skills/anytype/SKILL.md'
+    assert skill_path.read_text() in viewed['content']
+    assert not (isolated_home / 'skills' / 'anytype' / 'SKILL.md').exists()
 
 
 def test_profile_secrets_and_home_A_B_A(tmp_path):
@@ -247,7 +286,7 @@ async def test_full_gateway_loop_and_new_adapter_recovers_downtime(isolated_home
     adapter.set_message_handler(answer)
     assert await adapter.connect()
     await asyncio.wait_for(completed.wait(), 10)
-    assert adapter.store.inputs(['completed'])[0]['message_id'] == 'in1'
+    assert adapter.store.inputs(['handed_off'])[0]['message_id'] == 'in1'
     assert requests[0]['reply_to'] == 'in1' and requests[0]['attachments'] == ['report']
     assert set(requests[0]) == {'text', 'reply_to', 'attachments'}
     await adapter.disconnect()
@@ -262,19 +301,20 @@ async def test_full_gateway_loop_and_new_adapter_recovers_downtime(isolated_home
     await asyncio.wait_for(completed.wait(), 10)
     assert handled == ['in1', 'outage']
     assert requests[-1]['reply_to'] == 'outage'
-    assert len(adapter.store.inputs(['completed'])) == 2
+    assert len(adapter.store.inputs(['handed_off'])) == 2
     await adapter.disconnect()
 
 
-async def test_inline_control_has_receipt_outcome(tmp_path):
+async def test_inline_control_records_handoff_without_processing_hooks(tmp_path):
     adapter = await adapter_ready(tmp_path)
     target = adapter.settings.targets[0]
     incoming = message('control', text='/status')
     await adapter._record(target, incoming)
     event = adapter._event(target, incoming)
     adapter.set_message_handler(AsyncMock(return_value=None))
-    await adapter._dispatch_inline_reply(event)
-    assert adapter.store.inputs(['completed'])[0]['message_id'] == 'control'
+    adapter.handle_message = adapter._dispatch_inline_reply
+    await adapter._handoff(event)
+    assert adapter.store.inputs(['handed_off'])[0]['message_id'] == 'control'
     await adapter.disconnect()
 
 
