@@ -603,7 +603,7 @@ released version containing all proposed capabilities.
   exposes creation/login/status/key management in the inspected source; it does
   not establish a rename command. Creation passes its name to Heart's
   [account-create operation](https://github.com/anyproto/anytype-cli/blob/main/core/auth.go).
-- Current gateway contracts: [transport specification](../SPEC.md),
+- Current gateway behavior: [operations](OPERATIONS.md),
   [configuration example](../hermes.example.yaml), and
   [release prerequisites](HERMES_PLUGIN_SUBMISSION.md).
 

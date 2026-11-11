@@ -17,7 +17,7 @@ configuration and start a gateway unexpectedly.
 
 Desktop, externally managed endpoints, and native CLI provisioning are supported.
 Use released Anytype CLI v0.5.0 as the supported baseline, following
-[the installation guide](INSTALL-OTHER-COMPUTER.md#2-install-released-anytype-cli).
+[the installation guide](INSTALL.md#2-install-anytype-cli).
 Native setup requires its schema-1 automation capabilities.
 Hermes checks capabilities and strict JSON envelopes; it never parses human account-key
 output. Install that compatible CLI explicitly and select its executable. No installer,

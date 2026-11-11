@@ -1,7 +1,95 @@
 # Anytype gateway operations
 
 Configuration, delivery behavior and development details for the Anytype gateway.
-For installation, start with [the installation guide](INSTALL-OTHER-COMPUTER.md).
+For installation, start with [the installation guide](INSTALL.md).
+
+## Update the plugin
+
+Use the same Hermes profile as installation. For a named profile, use
+`hermes -p <name>` throughout. Stop its gateway and close other Hermes/MCP clients
+before updating; this stops all messaging platforms in that profile. Keep Anytype
+running.
+
+For a plugin installed from the repository's default branch:
+
+```sh
+hermes gateway stop
+hermes plugins update anytype-platform
+hermes plugins list --user
+hermes anytype setup --help
+hermes anytype doctor --json
+```
+
+For a foreground gateway, stop it with Ctrl-C instead of `gateway stop`. Review
+any installer findings and resolve errors before continuing. The plugin list
+shows the version and source; setup help should include `--mode`, `--resume` and
+`--input`. Resolve any `doctor` result's `next_action`, then start the service:
+
+```sh
+hermes gateway start
+hermes gateway status
+```
+
+Use `hermes gateway run` for foreground operation. Send a mention from your human
+account to check the reply. An update keeps the profile's Anytype settings,
+credentials and `anytype/state.sqlite3`; it does not upgrade Anytype CLI or Hermes.
+Check [compatibility](VALIDATION.md) when updating either dependency.
+
+If installed with `--ref`, `plugins update` will not move the pin. Select a new
+tested commit, replace `FULL_COMMIT_SHA` with its 40-character SHA and reinstall:
+
+```sh
+hermes plugins install anyproto/anytype-hermes --force --ref FULL_COMMIT_SHA --enable
+```
+
+`--force` replaces the installed code and also accepts a caution scan verdict in
+the tested Hermes version. Review the selected source before using it. Keep the
+gateway stopped and repeat the checks above afterward.
+
+## Replace a manual installation
+
+A ZIP installation has no Git source for `plugins update`. With the profile's
+gateway and other clients stopped, remove the plugin code and install it through
+Hermes:
+
+```sh
+hermes plugins remove anytype-platform
+hermes plugins install anyproto/anytype-hermes --enable
+```
+
+This replaces the plugin directory and enablement entry. The gateway's settings,
+API credentials and state database live elsewhere in the profile and remain.
+Local edits inside the old plugin directory are removed. Check the version,
+setup help and `doctor` result before [starting again](#update-the-plugin).
+For an older patched Hermes runtime, also follow the
+[stock-Hermes migration](#upgrading-from-a-patched-installation).
+
+## Disable or remove
+
+Stop the profile's gateway first. To keep the plugin installed but stop loading it:
+
+```sh
+hermes plugins disable anytype-platform
+```
+
+To remove its installed code instead:
+
+```sh
+hermes plugins remove anytype-platform
+```
+
+These commands do not delete Anytype objects, the bot account, the CLI service,
+API keys, MCP configuration or the profile's `anytype` state directory. For permanent
+removal, remove the Anytype platform configuration from the profile's `config.yaml`.
+Keep unrelated platforms and provider settings. Restart the gateway if other
+messaging platforms in the profile should continue running.
+
+MCP is independent of chat. To disconnect object tools too, run `hermes mcp list`,
+then `hermes mcp remove <server-name>` for the Anytype connection, and restart
+clients that loaded it. Revoke an unused API key in Anytype. Manage or uninstall
+the Anytype CLI service separately through the CLI when no other client needs it.
+Keep `anytype/state.sqlite3` if you plan to reconnect with the same bot and retain
+its chat watches and receipts.
 
 ## Chats and spaces
 
@@ -92,8 +180,8 @@ state database. Do not blindly reverse old patches over newer Hermes code.
 
 ## Manual configuration
 
-1. Use the stock Hermes revision in [compatibility](../README.md#hermes-compatibility). No core patch is needed.
-2. Run `python3 scripts/package.py`. Extract `dist/anytype-platform.zip` into the owning profile's `plugins` directory. The resulting directory must be `<profile-home>/plugins/anytype-platform/`, containing `plugin.yaml` and `__init__.py`.
+1. Use the stock Hermes revision in [validation](VALIDATION.md#stock-hermes-migration--2026-11-10). No core patch is needed.
+2. Install the plugin through the [installation guide](INSTALL.md#3-install-and-enable-the-gateway), or use the [development package](#build-a-plugin-archive).
 3. Merge [hermes.example.yaml](../hermes.example.yaml) into that profile's `config.yaml`. Append `anytype-platform` to any existing `plugins.enabled` list and keep existing model/provider settings.
 4. Put `ANYTYPE_API_KEY=<your key>` in the owning profile's `.env` or secret store. Fill in full space/chat IDs and your **other account's** identity or participant ID. Use `group_allow_from: ["*"]` for anyone in those configured chats.
 5. Keep explicit operator IDs in `group_allow_admin_from`. An empty admin list disables Hermes's slash-command privilege gate; this is independent of chat admission.
@@ -243,3 +331,27 @@ The development helper creates a clean, detached upstream checkout and never app
 The wrapper invokes Hermes's prescribed `scripts/run_tests.sh`, including isolated homes, sanitized environment and per-file subprocesses. The local `.venv` is the default when `HERMES_PYTHON` is omitted. Source remains in this repository; `.dev`, `.venv`, `.runtime` and `dist` are excluded from version control. The package builder uses an explicit file allowlist and includes no token or runtime database.
 
 Protocol, state and sender tests use fake HTTP responses. Integration tests load the real plugin/gateway paths and cover a full chat loop plus recovery with a fresh adapter. Live second-account conversation and Desktop/mobile rendering remain release acceptance checks.
+
+### Build a plugin archive
+
+From a local checkout, build an archive containing the runtime, workflow skill
+and documentation:
+
+```sh
+python3 scripts/package.py
+```
+
+For a fresh development installation in the default profile, with its gateway
+stopped:
+
+```sh
+mkdir -p "$HOME/.hermes/plugins"
+unzip dist/anytype-platform.zip -d "$HOME/.hermes/plugins"
+hermes plugins enable anytype-platform
+```
+
+For a named profile, use its `plugins` directory and `hermes -p <name>`. The
+resulting directory must contain `anytype-platform/plugin.yaml` and `__init__.py`.
+This manual installation has no Git update tracking. The archive excludes patches,
+credentials and runtime state; a repository installation also includes historical
+source files, but never applies the archived patches.

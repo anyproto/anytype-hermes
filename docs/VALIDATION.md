@@ -1,5 +1,32 @@
 # Validation record
 
+## Native installation and documentation — 2026-11-11
+
+Hermes `ec3249919accf7bc51f780dcff663e8f19a0e176` installed the repository through
+`hermes plugins install anyproto/anytype-hermes --enable` in an isolated profile.
+The fetched gateway commit was `26d636460513f32a6148dc0fc04eb03a75a3c740`, version
+0.6.0. The installer reported `CAUTION`; its source-review prompt was accepted
+with the user's approval. This is an interactive installation path.
+
+Checks confirmed:
+
+- `plugins list --user --json` reports `anytype-platform` enabled, version 0.6.0,
+  with Git provenance. `anytype setup --help` exposes the current setup options.
+- `plugins update anytype-platform` completes with the same source-review prompt
+  and reports already up to date. This checks the update command, not a version jump.
+- Disable, re-enable and removal change the plugin's listed state as expected.
+  Each preserves synthetic platform/MCP configuration, a dummy credential-file
+  marker and a byte-for-byte SQLite state fixture outside the plugin directory.
+- Edited documentation links, heading anchors and shell syntax pass checks.
+  The archive includes the renamed installation guide and its old-path redirect;
+  it excludes the archived gateway spec, original research, patches, credentials
+  and runtime state.
+
+The profile and lifecycle evidence are under `.runtime/docs-install-20261111/`.
+No live gateway was changed and no Anytype account, message or object was created.
+This verifies distribution and CLI discovery; the setup/chat acceptance checks
+below remain separate.
+
 ## Stock Hermes migration — 2026-11-10
 
 Version **0.6.0** passes **325 tests, 0 failures, 0 skips** on unmodified Hermes

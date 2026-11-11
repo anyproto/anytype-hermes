@@ -22,7 +22,7 @@ Hermes's stock ledger owns final-reply recovery. A recovered reply may carry a
 visible duplicate warning and omit its exact reply anchor or explicit attachment
 metadata. The plugin retains per-chunk receipts and prevents immediate fallback
 from silently duplicating an ambiguous POST. Full guarantees are in
-[the specification](../SPEC.md#turn-and-delivery-semantics).
+[the recovery guide](OPERATIONS.md#recovery-and-operation).
 
 ## Steps to publish
 

@@ -1,6 +1,13 @@
-# Anytype gateway for Hermes — implementation specification
+# Historical gateway design notes
 
-Version: 0.6.0 · 2026-11-10 · Target: stock Hermes ec324991
+Archived 2026-11-11. These notes combine the original 0.1 proposal with addenda
+through 0.6. They contain superseded requirements and unverified assumptions,
+including explicit-chat-only configuration, no-op typing and early MCP claims.
+They are retained for design history and are not a current implementation contract.
+Use [operations](../OPERATIONS.md), [setup](../SETUP.md) and
+[validation](../VALIDATION.md) for current behavior and support limits.
+
+Last recorded version: 0.6.0 · 2026-11-10 · Target: stock Hermes ec324991
 
 ## 0.6 addendum: stock Hermes recovery
 
@@ -82,8 +89,8 @@ REST, and supply bounded parent context at admission. Discussion sessions use
 Hermes thread settings; sends use the actual discussion chat ID and validated
 matching thread metadata. The existing text, attachment, status, and durable
 delivery contracts below remain in force. Automatic multi-space discovery and
-worker isolation are not included. See [README.md](README.md) for configuration
-and recovery limits, and [the implementation plan](docs/MULTICHAT_IMPLEMENTATION_PLAN.md)
+worker isolation are not included. See [operations](../OPERATIONS.md) for configuration
+and recovery limits, and [the implementation plan](../MULTICHAT_IMPLEMENTATION_PLAN.md)
 for the reviewed design and checks.
 
 ## 0.2 addendum: ephemeral chat activity
@@ -111,7 +118,11 @@ refreshes: each refresh must publish even though its tool execution ID stays fix
 
 This specifies a standalone Hermes platform plugin, `anytype`, backed by Anytype API v2. The gateway receives chat events through HTTP Server-Sent Events (SSE) and posts ordinary Hermes replies through REST. The official local Anytype MCP server gives the agent tools for working with the space.
 
-This document defines the intended behavior. See [README.md](README.md) for the implementation, stock Hermes compatibility and current limitations, and [docs/VALIDATION.md](docs/VALIDATION.md) for completed and pending checks. [RESEARCH.md](RESEARCH.md) contains the source investigation. This specification takes precedence over its exploratory proposals. [hermes.example.yaml](hermes.example.yaml) contains the combined configuration, with placeholders instead of credentials.
+The sections below record the intended behavior at the time of writing. See
+[operations](../OPERATIONS.md) for the implemented behavior and
+[validation](../VALIDATION.md) for completed and pending checks. The original
+research report is available in Git history. [hermes.example.yaml](../../hermes.example.yaml)
+contains configuration examples with placeholders instead of credentials.
 
 ## 1. Product contract
 
@@ -171,7 +182,7 @@ Target an external plugin installed in the owning Hermes profile. Reuse scoped s
 
 ## 3. Configuration and identity
 
-The canonical example is [hermes.example.yaml](hermes.example.yaml). Adapter settings live under `gateway.platforms.anytype.extra`; `enabled` remains a platform setting. These are proposed plugin keys, not an already available Hermes integration.
+The canonical example is [hermes.example.yaml](../../hermes.example.yaml). Adapter settings live under `gateway.platforms.anytype.extra`; `enabled` remains a platform setting. These are proposed plugin keys, not an already available Hermes integration.
 
 | Setting | Default / rule |
 | --- | --- |
@@ -404,4 +415,4 @@ Suggested files: `plugin.yaml`, `__init__.py`, `adapter.py`, `client.py`, `state
 
 Use protocol fixtures/fake HTTP responses for boundary cases and real Hermes imports/discovery under temporary homes for integration checks. Follow the Hermes checkout's `scripts/run_tests.sh` runner. Live write tests use a dedicated test chat and explicitly tracked test objects; do not bulk-delete attachments as cleanup.
 
-Original research baseline: local API documentation/auth/discovery and heartbeat-only SSE were verified read-only. Implementation and validation have since progressed; [docs/VALIDATION.md](docs/VALIDATION.md) tracks the current evidence. The next release gate is live acceptance with the second account.
+Original research baseline: local API documentation/auth/discovery and heartbeat-only SSE were verified read-only. Implementation and validation have since progressed; [validation](../VALIDATION.md) tracks the current evidence. The next release gate is live acceptance with the second account.

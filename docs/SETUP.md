@@ -1,7 +1,7 @@
 # Set up Anytype
 
-Install the plugin first using [the installation guide](INSTALL-OTHER-COMPUTER.md).
-Gateway 0.6 runs on the tested [stock Hermes revision](../README.md#hermes-compatibility)
+Install the plugin first using [the installation guide](INSTALL.md).
+Gateway 0.6 runs on the tested [stock Hermes revision](VALIDATION.md#stock-hermes-migration--2026-11-10)
 without core patches. Use `hermes anytype setup` for the connection wizard.
 
 Choose a connection:
@@ -14,7 +14,7 @@ Choose a connection:
 
 All paths finish with [saving and starting the connection](#save-and-start).
 Commands below use the active Hermes profile. See the
-[named-profile example](INSTALL-OTHER-COMPUTER.md#use-a-named-hermes-profile)
+[named-profile example](INSTALL.md#use-a-named-hermes-profile)
 to install and configure another one.
 
 The bot account and your human account must both belong to the space. The bot
@@ -25,11 +25,11 @@ own messages. Allowlists do not restrict the agent's wider MCP, memory or tool a
 ## Anytype CLI
 
 Use released [Anytype CLI v0.5.0](https://github.com/anyproto/anytype-cli/releases/tag/v0.5.0)
-as the supported baseline. The [fresh-install walkthrough](INSTALL-OTHER-COMPUTER.md#2-install-released-anytype-cli)
+as the supported baseline. The [fresh-install walkthrough](INSTALL.md#2-install-anytype-cli)
 includes installation and a capability check. Hermes checks the CLI's automation
 capabilities before making changes.
 
-For a new bot, follow [the wizard choices](INSTALL-OTHER-COMPUTER.md#4-run-the-onboarding-wizard)
+For a new bot, follow [the wizard choices](INSTALL.md#4-run-the-onboarding-wizard)
 for service installation, account creation, agent name, invitation and HTTP MCP.
 That walkthrough also selects private-file credential storage, which works on
 headless machines without a desktop keyring.
@@ -159,7 +159,7 @@ hermes gateway run
 
 From your allowed human account, use Anytype's account-mention picker to mention
 the bot in a chat. A typed display name is not an account mention. For background
-operation after this check, use the [service commands](INSTALL-OTHER-COMPUTER.md#5-check-and-start).
+operation after this check, use the [service commands](INSTALL.md#5-check-and-start).
 
 For setup to manage a known, unshared Hermes gateway service, choose `managed`
 coordination instead. See [publication options](SETUP_REFERENCE.md#preparation-and-publication)
@@ -186,11 +186,25 @@ For desktop/external mode, join the space in the owning client before running
 enumeration happens at startup. See [joining details](SETUP_REFERENCE.md#resume-and-joining)
 for grant or discovery changes.
 
-An HTTP 401 means the saved credential was rejected: check the key and API
-address, then run setup to repair the existing connection. A membership warning
-requires editor access or higher in each selected space, even with a readwrite
-key. Missing API routes require an updated Anytype build. Keep the profile's
-`anytype/state.sqlite3` when upgrading or repairing.
+## Troubleshooting
+
+Run checks in the same profile as the gateway. For a named profile, prefix every
+command with `hermes -p <name>` instead of `hermes`.
+
+| Symptom | Check and action |
+| --- | --- |
+| `setup` is missing; help shows only `status` and `reconcile` | Run `hermes plugins list --user`. Check the profile and plugin version, then [update the loaded copy](OPERATIONS.md#update-the-plugin). |
+| No reply to a mention | Check `hermes gateway status` for a service and `hermes anytype status` for chat health. Send from your allowed human account using the account-mention picker. Bot-account messages and plain-text names do not trigger discovery. |
+| HTTP 401 | Check the API address and key. Run setup again for the current mode to repair the saved connection; enter the replacement key privately. |
+| Membership/permission warning | Grant the bot editor access or higher in each selected space. Confirm the API key has read/write access and covers those spaces, then run `hermes anytype doctor --json`. |
+| Missing chat/search API routes, or HTTP 404 on those routes | Verify the API address and update/restart the Anytype app or CLI with the required API v2 streams. Run `hermes anytype doctor --json` again. |
+| Newly joined space is ignored | Confirm membership and API-key scope. Run `hermes anytype join` to reconcile discovery, then restart the gateway; spaces are listed at startup. |
+| Setup finished, but the connection did not change | If Publication was `defer`, run `hermes anytype setup --resume`, then [save and start](#save-and-start) with `save_stopped`. |
+| Chat works, but object search/creation does not | Check the MCP result in `hermes anytype doctor --json`; connect [Anytype MCP](#mcp-options) if setup used `none`. |
+
+Stop the gateway before repairing or publishing configuration, as described in
+[save and start](#save-and-start). Keep the profile's `anytype/state.sqlite3` when
+upgrading or repairing.
 
 For scripts and custom grants, use the [automation input reference](SETUP_REFERENCE.md#automation-input).
 It covers private credential files, publication controls and exit codes.

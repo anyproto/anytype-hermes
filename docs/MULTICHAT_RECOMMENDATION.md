@@ -21,7 +21,7 @@ and [configuration/limitations](OPERATIONS.md#chats-and-spaces).
 This document consolidates the proposed gateway extension and the Heart API v2
 changes it needs. It replaces earlier exploratory recommendations for these
 features, including tracking agent-created objects through MCP callbacks. The
-existing [gateway specification](../SPEC.md) continues to describe delivery,
+current [operations guide](OPERATIONS.md) describes delivery,
 attachments, tool activity, and other implemented behavior.
 
 ## 1. Recommended design
