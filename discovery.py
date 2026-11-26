@@ -133,6 +133,8 @@ class Discovery:
             retry = 0
             try:
                 async for frame in self.client.subscription(self.space, search=search):
+                    if not self.authorized:
+                        return
                     if not frame.data:
                         continue
                     payload = event_payload(frame)
@@ -455,21 +457,31 @@ class Discovery:
 
 
 class DiscoveryManager:
-    """Own the fixed startup space set; each watcher has independent readiness/I/O."""
+    """Reconcile visible spaces and own the lifetime of each space worker."""
 
-    def __init__(self, adapter, spaces, failures):
+    def __init__(self, adapter, spaces, failures, *, receive=True):
         self.adapter = adapter
-        self.failures = failures
+        self.running = {}
         # A newly granted space may already contain a mention from downtime.
         # Baseline it against first multi-space activation, not this restart.
         adapter._discovery_started = adapter.store.discovery_epoch(adapter._discovery_started)
         adapter._targets = {}
+        home = adapter.config.home_channel
+        self.home_chat = home.chat_id if home else None
+        active = adapter.settings.watcher_spaces(spaces, self.home_chat) if receive else spaces
+        if not receive:
+            # A stopped repair reads history without allocating SSE slots or
+            # changing the active/waiting assignment from the last receiver.
+            for space in adapter.store.discovery_spaces().keys() - set(spaces):
+                adapter.store.remove_space(space)
         for row in adapter.store.catalog():
-            if row['space_id'] not in spaces:
+            if row['space_id'] not in active:
                 adapter.store.unavailable(row['target'])
-        self.workers = {space: Discovery(adapter, space) for space in spaces}
+        self.workers = {space: Discovery(adapter, space) for space in active}
+        for space in set(spaces).difference(active):
+            adapter.store.space_health(space, 'waiting_for_slot')
         for space, status in failures.items():
-            if status in {403, 404}:
+            if space in self.workers and status in {403, 404}:
                 self.workers[space].suspend()
                 adapter.store.space_health(space, 'auth_failed' if status == 403 else 'space_unavailable')
 
@@ -484,8 +496,52 @@ class DiscoveryManager:
         for worker in self.workers.values():
             worker.suspend()
 
-    def tasks(self):
-        return [self.run_space(worker) for worker in self.workers.values()]
+    def start(self):
+        for space, worker in self.workers.items():
+            self.running[space] = self.adapter._background(self.run_space(worker))
+
+    async def replace_spaces(self, spaces):
+        adapter = self.adapter
+        previous = set(adapter._spaces)
+        adapter._spaces = spaces
+        stopping = []
+        active = adapter.settings.watcher_spaces(spaces, self.home_chat, self.workers)
+        removed = previous.difference(spaces)
+        displaced = self.workers.keys() - set(active)
+        for space in removed | displaced:
+            worker = self.workers.pop(space, None)
+            if worker:
+                worker.authorized = False
+                worker.ready.clear()
+                task = self.running.pop(space)
+                task.cancel()
+                stopping.append(task)
+            adapter.retire_space_activity(space)
+            adapter.store.remove_space(space)
+            for cache in (adapter._me, adapter._members, adapter._allowed, adapter._admins):
+                cache.pop(space, None)
+            for row in adapter.store.catalog(space):
+                key = row['target']
+                adapter._targets.pop(key, None)
+                adapter._names.pop(key, None)
+                adapter._chat_meta.pop(key, None)
+            if space in displaced and space not in removed:
+                adapter.store.add_space(space, 'waiting_for_slot')
+        if removed or displaced:
+            adapter._update_group_gates()
+        if stopping:
+            await asyncio.gather(*stopping, return_exceptions=True)
+        for space in spaces:
+            if space in self.workers:
+                continue
+            if space not in active:
+                if space not in previous:
+                    adapter.store.add_space(space, 'waiting_for_slot')
+                    log.warning('Anytype discovery space waiting for a free stream slot')
+                continue
+            adapter.store.add_space(space, 'discovering')
+            worker = self.workers[space] = Discovery(adapter, space)
+            self.running[space] = adapter._background(self.run_space(worker))
 
     async def recover(self, target, *, full=True):
         worker = self.for_space(target.space_id)
@@ -515,6 +571,7 @@ class DiscoveryManager:
         if not self.adapter._running or not worker.authorized:
             return
         tasks = [asyncio.create_task(coro) for coro in worker.tasks()]
+        tasks.append(asyncio.create_task(self.adapter._periodic(worker.space)))
         stopped = asyncio.create_task(worker.stopped.wait())
         try:
             done, _ = await asyncio.wait([*tasks, stopped], return_when=asyncio.FIRST_COMPLETED)

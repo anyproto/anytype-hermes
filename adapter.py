@@ -17,7 +17,7 @@ from hermes_constants import get_hermes_home
 from .client import APIError, Client, ProtocolError, ResyncRequired, event_payload
 from .activity import ActivityPublisher
 from . import tool_hooks
-from .config import Settings, Target, resolve_api_key
+from .config import MAX_DISCOVERY_SPACES, Settings, Target, resolve_api_key
 from .formatting import object_link, utf16_len
 from .sender import Sender
 from .state import Store
@@ -67,6 +67,7 @@ class AnytypeAdapter(BasePlatformAdapter):
         self._chat_meta = {}
         self.discovery = None
         self._spaces = self.settings.spaces
+        self._space_stream = None
         self._account_identity = None
 
     @property
@@ -74,12 +75,18 @@ class AnytypeAdapter(BasePlatformAdapter):
         return utf16_len
 
     async def _refresh_members(self, space):
+        watcher = self.discovery.for_space(space) if self.discovery else None
+        if self.discovery and watcher is None:
+            return
         try:
             rows = [row async for row in self.client.rows(f'/v2/spaces/{quote(space, safe="")}/members')]
         except APIError as error:
-            if self.discovery and error.status in {401, 403}:
+            if self.discovery and (error.status == 401 or
+                                   (error.status == 403 and watcher is self.discovery.for_space(space))):
                 self._suspend_discovery(space, error.status)
             raise
+        if watcher and (not watcher.authorized or self.discovery.for_space(space) is not watcher):
+            return
         members = {row['id']: row for row in rows if row.get('id')}
         self._members[space] = members
         def resolve(configured):
@@ -87,6 +94,9 @@ class AnytypeAdapter(BasePlatformAdapter):
                     if member_id in configured or row.get('identity') in configured}
         self._allowed[space] = resolve(self.settings.allow)
         self._admins[space] = resolve(self.settings.admins)
+        self._update_group_gates()
+
+    def _update_group_gates(self):
         self.config.extra['group_allow_from'] = (['*'] if self.settings.allow == {'*'}
                                                  else sorted(set().union(*self._allowed.values())))
         # A nonempty unresolved list must not disable Hermes's admin gate.
@@ -105,8 +115,12 @@ class AnytypeAdapter(BasePlatformAdapter):
         watcher = self.discovery if status == 401 else self.discovery.for_space(space)
         if watcher:
             watcher.suspend()
-        if status == 401:
+        if status == 401 and self._running:
             self._set_fatal_error('anytype_auth', 'Anytype credential is no longer accepted', retryable=False)
+            for task in self._tasks:
+                if task is not asyncio.current_task():
+                    task.cancel()
+            self._background(self._notify_fatal_error())
 
     async def _load_space(self, space):
         me = await self.client.request('GET', f'/v2/spaces/{quote(space, safe="")}/members/me')
@@ -128,70 +142,127 @@ class AnytypeAdapter(BasePlatformAdapter):
         self._me[space] = me
         return me['identity']
 
+    async def _prepare_account(self, receive):
+        path = self.home / 'anytype' / 'state.sqlite3'
+        identities = set()
+        if not self._spaces:
+            if not self._stream_account:
+                self._targets.clear()
+                return True  # The first grant will establish this credential's namespace.
+            identities.add(self._stream_account)
+        failures = {}
+        for space in self._spaces:
+            try:
+                identities.add(await self._load_space(space))
+                if self._space_stream is not None:
+                    # One verified member binds the account. Other spaces load
+                    # independently while we continue consuming membership events.
+                    break
+            except (APIError, httpx.HTTPError) as error:
+                if not self.settings.discovery_all_spaces or getattr(error, 'status', None) == 401:
+                    raise
+                failures[space] = getattr(error, 'status', None)
+                log.warning('Anytype space initialization deferred: %s', type(error).__name__)
+        if not identities and failures and self._space_stream is not None:
+            raise httpx.ReadError('Visible Anytype spaces are not ready for account discovery')
+        if not identities and failures:
+            raise APIError(403 if all(status == 403 for status in failures.values()) else 503)
+        if len(identities) != 1:
+            raise ProtocolError('Accessible spaces must resolve to one API account; none may be ready yet')
+        self._account_identity = next(iter(identities))
+        namespace = self.settings.base_url + '|' + self._account_identity
+        if not self._acquire_platform_lock('anytype', namespace, 'Anytype API account'):
+            return False  # Hermes has already recorded the retryable lock error.
+        self.store = Store(path, namespace)
+        if self._space_stream is not None and self._key_id:
+            self.store.bind_stream_account(self.settings.base_url, self._key_id, self._account_identity)
+        if receive:
+            self.store.recover_inputs()
+            self.store.recover_deliveries()
+        self.sender = Sender(self.client, self.store, self.settings)
+        if self.settings.discovery_enabled:
+            from .discovery import Discovery, DiscoveryManager
+            if receive or not self.settings.discovery_all_spaces:
+                self.store.set_discovery_spaces(self._spaces, reset_creator_watches=self.settings.discovery_all_spaces)
+            self.discovery = (DiscoveryManager(self, self._spaces, failures, receive=receive)
+                              if self.settings.discovery_all_spaces else Discovery(self))
+            self.client.target_allowed = self.discovery.available
+        if receive and self.settings.activity_status:
+            self.activity = ActivityPublisher(self.client, secrets=(resolve_api_key(
+                {'api_key_env': self.settings.api_key_env}),))
+        for target in (() if self.discovery else self.settings.targets):
+            if self.store.chat(target.key) is None:
+                messages, cursor = await self._history_scan(target, baseline=True)
+                self.store.baseline(target.key, messages, cursor)
+        return True
+
+    def _background(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.append(task)
+        task.add_done_callback(self._task_done)
+        return task
+
+    def _start_account_tasks(self):
+        self._background(self._dispatch_loop())
+        self._wake.set()
+        if self.settings.discovery_all_spaces:
+            self.discovery.start()
+            return
+        self._background(self._periodic())
+        if self.discovery:
+            for coro in self.discovery.tasks():
+                self._background(coro)
+        else:
+            for target in self.settings.targets:
+                self._background(self._listen(target))
+
     async def connect(self, *, is_reconnect=False, receive=True):
         try:
             self._discovery_started = datetime.now(timezone.utc).timestamp()
             if self.client is None:
                 self.client = Client(self.settings.base_url, resolve_api_key({'api_key_env': self.settings.api_key_env}))
-            await self.client.request('GET', '/v2/auth/whoami')
+            whoami = await self.client.request('GET', '/v2/auth/whoami')
+            self._key_id = (whoami.get('key') or {}).get('id')
             if self.settings.discovery_all_spaces:
-                # Exactly one complete listing per connect; no periodic space polling.
-                rows = [row async for row in self.client.rows('/v2/spaces', ids='full')]
-                self._spaces = tuple(dict.fromkeys(Target(row.get('id'), 'validate').space_id for row in rows))
-                if not self._spaces:
-                    raise ValueError('No accessible Anytype spaces; grant access and restart the gateway')
-                if len(self._spaces) > 16:
+                if receive:
+                    self._space_stream = self.client.space_sets()
+                    try:
+                        self._spaces = await anext(self._space_stream)
+                        self._stream_account, self._discovery_started = Store.start_space_stream(
+                            self.home / 'anytype' / 'state.sqlite3', self.settings.base_url,
+                            self._key_id, self._discovery_started)
+                    except APIError as error:
+                        if error.status in {400, 403}:
+                            schema = await self.client.request('GET', '/v2/docs/openapi.json')
+                            paths = schema.get('paths', {})
+                            if '/v2/spaces/stream' in paths or '/v2/spaces' not in paths:
+                                raise
+                        elif error.status not in {404, 405}:
+                            raise
+                        await self._space_stream.aclose()
+                        self._space_stream = None
+                        log.warning('Heart lacks the spaces stream; using startup-only space discovery')
+                if self._space_stream is None:
+                    rows = [row async for row in self.client.rows('/v2/spaces', ids='full')]
+                    self._spaces = tuple(dict.fromkeys(Target(row.get('id'), 'validate').space_id for row in rows))
+                    if not self._spaces:
+                        raise ValueError('No accessible Anytype spaces')
+                if receive and self._space_stream is None and len(self._spaces) > MAX_DISCOVERY_SPACES:
                     raise ValueError('Heart currently supports at most 16 discovery spaces; narrow the API grant')
-            identities = set()
-            failures = {}
-            for space in self._spaces:
-                try:
-                    identities.add(await self._load_space(space))
-                except (APIError, httpx.HTTPError) as error:
-                    if not self.settings.discovery_all_spaces or getattr(error, 'status', None) == 401:
-                        raise
-                    failures[space] = getattr(error, 'status', None)
-                    log.warning('Anytype space initialization deferred: %s', type(error).__name__)
-            if not identities and failures:
-                raise APIError(403 if all(status == 403 for status in failures.values()) else 503)
-            if len(identities) != 1:
-                raise ProtocolError('Accessible spaces must resolve to one API account; none may be ready yet')
-            self._account_identity = next(iter(identities))
-            namespace = self.settings.base_url + '|' + self._account_identity
-            if not self._acquire_platform_lock('anytype', namespace, 'Anytype API account'):
+            if not await self._prepare_account(receive):
                 await self.disconnect()
                 return False
-            self.store = Store(self.home / 'anytype' / 'state.sqlite3', namespace)
-            if receive:
-                self.store.recover_inputs()
-                self.store.recover_deliveries()
-            self.sender = Sender(self.client, self.store, self.settings)
-            if self.settings.discovery_enabled:
-                from .discovery import Discovery, DiscoveryManager
-                self.store.set_discovery_spaces(self._spaces)
-                self.discovery = (DiscoveryManager(self, self._spaces, failures) if self.settings.discovery_all_spaces
-                                  else Discovery(self))
-                self.client.target_allowed = self.discovery.available
-            if receive and self.settings.activity_status:
-                self.activity = ActivityPublisher(self.client, secrets=(resolve_api_key(
-                    {'api_key_env': self.settings.api_key_env}),))
-            for target in (() if self.discovery else self.settings.targets):
-                if self.store.chat(target.key) is None:
-                    messages, cursor = await self._history_scan(target, baseline=True)
-                    self.store.baseline(target.key, messages, cursor)
             if not receive:
                 return True
             self._mark_connected()
-            self._tasks = [asyncio.create_task(self._dispatch_loop()), asyncio.create_task(self._periodic())]
-            if self.discovery:
-                self._tasks.extend(asyncio.create_task(task) for task in self.discovery.tasks())
-            else:
-                self._tasks.extend(asyncio.create_task(self._listen(target)) for target in self.settings.targets)
-            for task in self._tasks:
-                task.add_done_callback(self._task_done)
-            self._wake.set()
-            log.info('Anytype connected: %d chats; receipt counts %s', len(self._targets), self.store.summary())
+            if self.store:
+                self._start_account_tasks()
+            if self._space_stream is not None:
+                self._background(self._watch_spaces())
             return True
+        except asyncio.CancelledError:
+            await self.disconnect()
+            raise
         except (ValueError, RuntimeError, ProtocolError, APIError, httpx.HTTPError) as error:
             log.error('Anytype connect failed: %s', str(error))
             temporary = isinstance(error, httpx.HTTPError) or (
@@ -204,8 +275,48 @@ class AnytypeAdapter(BasePlatformAdapter):
             await self.disconnect()
             return False
 
+    async def _watch_spaces(self):
+        backoff = 1
+        while self._running:
+            try:
+                if self._space_stream is None:
+                    self._space_stream = self.client.space_sets()
+                async for spaces in self._space_stream:
+                    if self.discovery:
+                        await self.discovery.replace_spaces(spaces)
+                    elif spaces:
+                        # Heart identifies the account through members/me. An empty
+                        # initial grant can stay subscribed until its first space.
+                        self._spaces = spaces
+                        if not await self._prepare_account(True):
+                            await self._notify_fatal_error()
+                            return
+                        self._start_account_tasks()
+                    backoff = 1
+            except APIError as error:
+                if error.status in {401, 403}:
+                    if self.discovery:
+                        self._suspend_discovery(None, 401)
+                    else:
+                        self._set_fatal_error('anytype_auth', str(error), retryable=False)
+                        await self._notify_fatal_error()
+                    return
+                backoff = max(backoff, error.retry_after or 0)
+            except (ProtocolError, httpx.HTTPError) as error:
+                log.warning('Anytype spaces stream reconnecting: %s', type(error).__name__)
+            finally:
+                await self._space_stream.aclose()
+                self._space_stream = None
+            # Per-space subscriptions check grants at open. Stop them until a
+            # complete fresh account snapshot proves which ones may reopen.
+            if self.discovery:
+                await self.discovery.replace_spaces(())
+            await asyncio.sleep(backoff + random.random())
+            backoff = min(60, backoff * 2)
+
     def _task_done(self, task):
-        if task.cancelled() or task.exception() is None:
+        self._tasks.remove(task)
+        if task.cancelled() or task.exception() is None or not self._running:
             return
         log.error('Anytype ingress paused after %s', type(task.exception()).__name__)
         self._set_fatal_error('anytype_background', 'Ingress paused; inspect local logs and receipt status', retryable=False)
@@ -213,13 +324,16 @@ class AnytypeAdapter(BasePlatformAdapter):
         for other in self._tasks:
             if other is not task:
                 other.cancel()
+        self._background(self._notify_fatal_error())
 
     async def disconnect(self):
         self._running = False
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
+        if self._space_stream is not None:
+            await self._space_stream.aclose()
+            self._space_stream = None
         await self.cancel_background_tasks()
         for binding in self._activity_bindings.values():
             tool_hooks.unbind(binding)
@@ -235,6 +349,15 @@ class AnytypeAdapter(BasePlatformAdapter):
             self.store = None
         self._release_platform_lock()
         self.discovery = None
+        self.sender = None
+        self._account_identity = None
+        self._members.clear()
+        self._me.clear()
+        self._allowed.clear()
+        self._admins.clear()
+        self._targets = {t.key: t for t in self.settings.targets}
+        self._chat_meta.clear()
+        self._names.clear()
 
     async def _history_scan(self, target, *, baseline=False, deep=False):
         checkpoint = self.store.chat(target.key) if self.store and not baseline else None
@@ -292,9 +415,12 @@ class AnytypeAdapter(BasePlatformAdapter):
         self.store.record(target.key, message, 'pending' if allowed else 'filtered', cursor)
 
     async def _author_allowed(self, target, author):
+        if target.space_id not in self._me:
+            return False
         if author not in self._members[target.space_id]:
             await self._refresh_members(target.space_id)
-        return author != self._me[target.space_id]['id'] and (
+        me = self._me.get(target.space_id)
+        return bool(me) and author != me['id'] and (
             self.settings.allow == {'*'} or author in self._allowed[target.space_id])
 
     async def _frame(self, target, frame):
@@ -350,16 +476,17 @@ class AnytypeAdapter(BasePlatformAdapter):
             await asyncio.sleep(max(server_retry, min(60, backoff)) + random.random())
             backoff = min(60, backoff * 2)
 
-    async def _periodic(self):
+    async def _periodic(self, only_space=None):
         while self._running:
             await asyncio.sleep(300)
-            for space in list(self._members):
+            spaces = (only_space,) if only_space else tuple(self._members)
+            for space in spaces:
                 try:
                     await self._refresh_members(space)
                 except (APIError, ProtocolError, httpx.HTTPError):
                     log.warning('Anytype member refresh failed')
-            targets = ([Target.parse(row['target']) for row in self.store.catalog()
-                        if row['available'] and row['space_id'] in self._spaces] if self.discovery else self.settings.targets)
+            targets = ([Target.parse(row['target']) for row in self.store.catalog(only_space)
+                        if row['available'] and row['space_id'] in spaces] if self.discovery else self.settings.targets)
             for target in targets:
                 if self.store.chat(target.key)['health'] in {'auth_failed', 'target_missing'}:
                     continue
@@ -411,7 +538,7 @@ class AnytypeAdapter(BasePlatformAdapter):
             event.reply_to_text = reply.get('text')
             event.reply_to_author_id = reply.get('author_id')
             event.reply_to_author_name = reply.get('author')
-            event.reply_to_is_own_message = reply.get('author_id') == self._me[target.space_id]['id']
+            event.reply_to_is_own_message = reply.get('author_id') == self._me.get(target.space_id, {}).get('id')
         if not text and attachments:
             event.text = 'Please inspect the attached Anytype objects.'
         return event
@@ -449,7 +576,7 @@ class AnytypeAdapter(BasePlatformAdapter):
                     event.reply_to_text = message.get('text')
                     event.reply_to_author_id = message.get('author_id')
                     event.reply_to_author_name = message.get('author')
-                    event.reply_to_is_own_message = message.get('author_id') == self._me[target.space_id]['id']
+                    event.reply_to_is_own_message = message.get('author_id') == self._me.get(target.space_id, {}).get('id')
                     return
             if not page.get('has_more') or not page.get('next_before'):
                 break
@@ -478,14 +605,17 @@ class AnytypeAdapter(BasePlatformAdapter):
                 except (APIError, httpx.HTTPError, ProtocolError):
                     event.channel_context = ((event.channel_context or '') + '\nReply context unavailable.')
                 if self.discovery:
+                    if not watcher.ready.is_set():
+                        continue
                     try:
                         parent = await watcher.parent_context(target)
                     except APIError as error:
                         if error.status in {401, 403, 404}:
                             if error.status == 401:
                                 self._suspend_discovery(target.space_id, error.status)
-                            self.store.unavailable(target.key)
-                            watcher._sync_targets()
+                            if self.discovery.for_space(target.space_id) is watcher:
+                                self.store.unavailable(target.key)
+                                watcher._sync_targets()
                         else:
                             self.store.health(target.key, 'context_unavailable')
                         continue
@@ -502,7 +632,17 @@ class AnytypeAdapter(BasePlatformAdapter):
                 if not self._trigger(event):
                     self.store.mark(target.key, event.message_id, 'ignored' if self.discovery else 'filtered')
                     continue
-                if not await self._author_allowed(target, event.user_id):
+                try:
+                    allowed = await self._author_allowed(target, event.user_id)
+                except (APIError, httpx.HTTPError, ProtocolError):
+                    # A removed space or an unavailable directory affects this
+                    # receipt only. _refresh_members handles credential rejection.
+                    if watcher and watcher.ready.is_set():
+                        self.store.health(target.key, 'member_check_deferred')
+                    continue
+                if watcher and not watcher.ready.is_set():
+                    continue
+                if not allowed:
                     self.store.mark(target.key, event.message_id, 'filtered')
                     continue
                 if self.discovery:
@@ -528,6 +668,17 @@ class AnytypeAdapter(BasePlatformAdapter):
             log.error('Anytype input handoff failed (%s); receipt retained as uncertain', type(error).__name__)
         else:
             self.store.mark(target, message_id, 'handed_off')
+
+    def retire_space_activity(self, space):
+        for event_id, binding in list(self._activity_bindings.items()):
+            if binding.target.space_id == space:
+                binding.retire()
+                del self._activity_bindings[event_id]
+        if self.activity:
+            self.activity.retire_space(space)
+        for key in list(self._status_text):
+            if key.startswith(space + '/'):
+                self._status_text.pop(key)
 
     async def on_processing_start(self, event):
         if self.activity and event.source.chat_id in self._targets:

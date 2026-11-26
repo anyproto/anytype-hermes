@@ -88,9 +88,9 @@ mention the bot and ask it to say hello.
 With discovery enabled, a mention adds the chat to the watch list. Replies to
 the bot can also add a chat.
 
-Multi-space mode lists accessible spaces once at startup. Restart the gateway after
-joining a space or extending the API key's access. Chat and object changes stream
-continuously within those spaces.
+In multi-space mode, joining a space covered by the API key starts discovery there.
+Leaving the space or losing the grant stops its listeners. This uses Heart’s API v2
+spaces stream. Older clients discover spaces at gateway startup.
 
 Allowlists control who can invoke the agent. They do not isolate its MCP tools,
 memory, shell or other data access between spaces. Use this setup with trusted
@@ -99,7 +99,7 @@ discovery, shared sessions and permissions.
 
 ## Hermes compatibility
 
-Gateway 0.6.0 runs on stock Hermes without core patches. Tool activity uses Hermes's
+The gateway runs on stock Hermes without core patches. Tool activity uses Hermes's
 public hooks. See [tested versions and validation](docs/VALIDATION.md) for the exact
 Hermes revision, API requirements and remaining live checks.
 

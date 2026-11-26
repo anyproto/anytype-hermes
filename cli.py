@@ -32,6 +32,8 @@ def local_status(path):
         return {'status': 'not_initialized'}
     with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as db:
         db.row_factory = sqlite3.Row
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chats'").fetchone():
+            return {'status': 'waiting_for_first_space'}
         result = {
             'chats': [dict(row) for row in db.execute('SELECT target,health FROM chats')],
             'inputs': {row[0]: row[1] for row in db.execute('SELECT status,count(*) FROM inputs GROUP BY status')},
@@ -54,7 +56,7 @@ async def reconcile_history(deep):
     adapter = AnytypeAdapter(config)
     try:
         if not await adapter.connect(receive=False):
-            raise RuntimeError('Could not acquire Anytype account; stop its gateway before reconciliation')
+            raise RuntimeError(adapter.fatal_error_message or 'Could not connect for Anytype reconciliation')
         targets = ([Target.parse(row['target'])
                     for row in adapter.store.catalog() if row['available'] and row['space_id'] in adapter._spaces]
                    if adapter.discovery else adapter.settings.targets)

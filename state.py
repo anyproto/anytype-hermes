@@ -62,16 +62,63 @@ class Store:
     def close(self):
         self.db.close()
 
+    @staticmethod
+    def start_space_stream(path, origin, key_id, since):
+        """Keep the first snapshot cutoff even before a credential has any spaces."""
+        if not key_id:
+            return None, since
+        path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(path)
+        try:
+            with db:
+                db.execute("""CREATE TABLE IF NOT EXISTS space_stream_accounts (
+                    origin TEXT, key_id TEXT, identity TEXT, since REAL NOT NULL, PRIMARY KEY(origin,key_id))""")
+                db.execute('INSERT OR IGNORE INTO space_stream_accounts VALUES (?,?,NULL,?)', (origin, key_id, since))
+                return db.execute('SELECT identity,since FROM space_stream_accounts WHERE origin=? AND key_id=?',
+                                  (origin, key_id)).fetchone()
+        finally:
+            db.close()
+
+    def bind_stream_account(self, origin, key_id, identity):
+        with self.db:
+            self.db.execute('UPDATE space_stream_accounts SET identity=? WHERE origin=? AND key_id=?',
+                            (identity, origin, key_id))
+
     def catalog(self, space=None):
         return [dict(r, reasons=json.loads(r['reasons'])) for r in self.db.execute(
             'SELECT * FROM catalog WHERE ns=?' + (' AND space_id=?' if space else ''),
             (self.ns, space) if space else (self.ns,))]
 
-    def set_discovery_spaces(self, spaces):
+    def _forget_creator_watches(self, space=None):
+        # The next completed search rebuilds only its own watches. Mentions and
+        # explicit pins survive, as do the chat recovery checkpoints.
+        scope = 'ns=?' + (' AND space_id=?' if space else '')
+        params = (self.ns, space) if space else (self.ns,)
+        self.db.execute('DELETE FROM owned_objects WHERE ' + scope, params)
+        rows = self.db.execute('SELECT target FROM catalog WHERE ' + scope + ' AND reasons LIKE ?',
+                               (*params, '%"agent_created_object"%')).fetchall()
+        for row in rows:
+            self._reason(row['target'], 'agent_created_object', False)
+
+    def set_discovery_spaces(self, spaces, *, reset_creator_watches=False):
         with self.db:
+            if reset_creator_watches:
+                self._forget_creator_watches()
             self.db.execute('DELETE FROM discovery_spaces WHERE ns=?', (self.ns,))
             self.db.executemany('INSERT INTO discovery_spaces VALUES (?,?,?)',
                                 [(self.ns, space, 'discovering') for space in spaces])
+
+    def remove_space(self, space):
+        with self.db:
+            self.db.execute('DELETE FROM discovery_spaces WHERE ns=? AND space_id=?', (self.ns, space))
+            self._forget_creator_watches(space)
+            self.db.execute("""UPDATE chats SET health='target_missing' WHERE ns=? AND target IN
+                (SELECT target FROM catalog WHERE ns=? AND space_id=?)""", (self.ns, self.ns, space))
+            self.db.execute('UPDATE catalog SET available=0 WHERE ns=? AND space_id=?', (self.ns, space))
+
+    def add_space(self, space, health):
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO discovery_spaces VALUES (?,?,?)', (self.ns, space, health))
 
     def discovery_spaces(self):
         return dict(self.db.execute('SELECT space_id,health FROM discovery_spaces WHERE ns=?', (self.ns,)))

@@ -11,7 +11,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from .client import APIError, Client, ProtocolError, parse_sse
-from .config import Settings, Target, resolve_api_key
+from .config import MAX_DISCOVERY_SPACES, Settings, Target, resolve_api_key
 from .setup_store import SetupError, outcome, ENV_REF
 
 
@@ -35,7 +35,7 @@ class Connection:
     def report(self):
         return {'account_identity': self.identity, 'agent_name': self.name,
                 'grant': self.grant, 'space_ids': [s['id'] for s in self.spaces],
-                'checks': self.checks, 'limits': {'discovery_spaces': 16,
+                'checks': self.checks, 'limits': {'discovery_spaces': MAX_DISCOVERY_SPACES,
                   'source': 'gateway implementation limit; not a universal Heart limit'}}
 
 
@@ -114,12 +114,17 @@ def tool_enabled(name, server):
 async def probe_stream(client, method, path, *, body=None, params=None):
     async with asyncio.timeout(12):
         async with client.http.stream(method, path, json=body, params=params) as response:
+            if response.status_code == 429:
+                await response.aread()
+                with suppress(ValueError):
+                    error = response.json()
+                    if isinstance(error, dict) and error.get('code') == 'too_many_streams':
+                        return 'at_capacity'
             if response.status_code != 200:
                 raise APIError(response.status_code)
             if 'text/event-stream' not in response.headers.get('content-type', ''):
                 raise ProtocolError('Required endpoint did not serve SSE')
-            # Headers are sufficient for route/auth/capacity validation. Close
-            # without consuming or exposing the initial chat-message window.
+            return 'ready'  # Headers suffice. Avoid reading the initial message window.
 
 
 async def inspect_api(extra, token, *, expected_identity=None, requested_grant=None,
@@ -146,8 +151,6 @@ async def inspect_api(extra, token, *, expected_identity=None, requested_grant=N
                              next_action='Wait for membership approval/sync and resume; do not resubmit the invitation.')
         if any(space not in ids for space in selected):
             raise SetupError('space_unavailable', 'A configured full space ID is not visible to this credential.', state='syncing')
-        if settings.discovery_enabled and len(selected) > 16:
-            raise SetupError('space_limit', 'This gateway supports at most 16 discovery spaces; narrow the grant.', state='incompatible')
         # Served schema is the capability authority for write routes; do not send
         # dummy messages, objects or activity to discover whether they exist.
         schema = await client.request('GET', '/v2/docs/openapi.json')
@@ -162,6 +165,14 @@ async def inspect_api(extra, token, *, expected_identity=None, requested_grant=N
         checks = [{'name': 'api_grant', 'state': 'ready'}, {'name': 'activity',
             'state': 'ready' if activity and settings.activity_status else
                      'disabled' if not settings.activity_status else 'incompatible'}]
+        active = set(selected)
+        if settings.discovery_all_spaces:
+            active = set(settings.watcher_spaces(selected, home['chat_id'] if home else None))
+            live = 'get' in paths.get('/v2/spaces/stream', {})
+            if len(selected) > MAX_DISCOVERY_SPACES and not live:
+                raise SetupError('space_limit', 'Startup-only discovery supports at most 16 spaces; narrow the grant.', state='incompatible')
+            state = await probe_stream(client, 'GET', '/v2/spaces/stream', params={'ids': 'full'}) if live else 'startup_only'
+            checks.append({'name': 'spaces_stream', 'state': state})
         identities, members, chats, names = set(), {}, {}, []
         for space in selected:
             root = '/v2/spaces/' + quote(space, safe='')
@@ -188,10 +199,11 @@ async def inspect_api(extra, token, *, expected_identity=None, requested_grant=N
             available = {row['id'] for row in chats[space]}
             if not required_chats <= available:
                 raise SetupError('home_or_pin_missing', 'A pinned/home chat is not accessible in its full space.')
-            if settings.discovery_enabled:
-                await probe_stream(client, 'GET', root + '/chats/stream', params={'include': 'discussions', 'ids': 'full'})
+            probes = {}
+            if settings.discovery_enabled and space in active:
+                probes['chats_stream'] = await probe_stream(client, 'GET', root + '/chats/stream', params={'include': 'discussions', 'ids': 'full'})
                 if settings.watch_agent_objects:
-                    await probe_stream(client, 'POST', root + '/search/stream',
+                    probes['search_stream'] = await probe_stream(client, 'POST', root + '/search/stream',
                         body={'filter': 'creator = ' + json.dumps(me['id']), 'fields': ['name', 'discussion']},
                         params={'ids': 'full'})
             # Exercise one available chat plus each selected pin. No chat is
@@ -203,11 +215,15 @@ async def inspect_api(extra, token, *, expected_identity=None, requested_grant=N
                     continue
                 path = root + '/chats/' + quote(chat['id'], safe='')
                 await client.request('GET', path + '/messages', params={'limit': 1})
-                await probe_stream(client, 'GET', path + '/messages/stream', params={'limit': 1})
+                result = await probe_stream(client, 'GET', path + '/messages/stream', params={'limit': 1})
+                if result != 'ready':
+                    probes['messages_stream'] = result
                 if chat.get('kind') == 'discussion':
                     await client.request('GET', root + '/objects/' + quote(chat['parent_id'], safe=''),
                                          params={'format': 'md', 'ids': 'full'})
-            checks.append({'name': 'space', 'space_id': space, 'state': 'ready',
+            state = 'at_capacity' if 'at_capacity' in probes.values() else 'ready'
+            checks.append({'name': 'space', 'space_id': space, 'state': state if space in active else 'waiting_for_slot',
+                           **probes,
                            'messages': 'ready' if sampled else 'schema_only_no_chats'})
         if len(identities) != 1:
             raise SetupError('account_mismatch', 'Spaces resolve to different bot accounts.', state='incompatible')

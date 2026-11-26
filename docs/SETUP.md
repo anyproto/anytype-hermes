@@ -182,8 +182,8 @@ Cancellation does not undo created accounts, memberships, services or keys.
 Rollback can be refused if configuration changed or the previous connection
 cannot be verified. Follow the reported action rather than deleting setup state.
 For desktop/external mode, join the space in the owning client before running
-`join`. Restart the gateway after adding a space covered by its grant; space
-enumeration happens at startup. See [joining details](SETUP_REFERENCE.md#resume-and-joining)
+`join`. With multi-space discovery and the spaces stream, the running gateway picks
+up new spaces covered by the current grant. Older clients need a gateway restart. See [joining details](SETUP_REFERENCE.md#resume-and-joining)
 for grant or discovery changes.
 
 ## Troubleshooting
@@ -198,7 +198,7 @@ command with `hermes -p <name>` instead of `hermes`.
 | HTTP 401 | Check the API address and key. Run setup again for the current mode to repair the saved connection; enter the replacement key privately. |
 | Membership/permission warning | Grant the bot editor access or higher in each selected space. Confirm the API key has read/write access and covers those spaces, then run `hermes anytype doctor --json`. |
 | Missing chat/search API routes, or HTTP 404 on those routes | Verify the API address and update/restart the Anytype app or CLI with the required API v2 streams. Run `hermes anytype doctor --json` again. |
-| Newly joined space is ignored | Confirm membership and API-key scope. Run `hermes anytype join` to reconcile discovery, then restart the gateway; spaces are listed at startup. |
+| Newly joined space is ignored | Confirm membership, API-key scope, and `discovery.spaces: all`. Check `spaces_stream` in `hermes anytype doctor --json`. Restart after joining if it reports `startup_only`. |
 | Setup finished, but the connection did not change | If Publication was `defer`, run `hermes anytype setup --resume`, then [save and start](#save-and-start) with `save_stopped`. |
 | Chat works, but object search/creation does not | Check the MCP result in `hermes anytype doctor --json`; connect [Anytype MCP](#mcp-options) if setup used `none`. |
 

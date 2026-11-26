@@ -166,7 +166,7 @@ hermes gateway start
 hermes gateway status
 ```
 
-Anytype CLI's local API defaults to `http://127.0.0.1:31012`; the wizard discovers the effective API/MCP endpoints. Adding another space later requires a gateway restart because space enumeration currently happens once at startup.
+Anytype CLI's local API defaults to `http://127.0.0.1:31012`; the wizard discovers the effective API/MCP endpoints. With multi-space discovery and a client that serves the API v2 spaces stream, newly granted spaces appear automatically.
 
 ## Use a named Hermes profile
 

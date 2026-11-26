@@ -11,7 +11,7 @@ from urllib.parse import quote
 import uuid
 
 from .client import Client, APIError
-from .config import Settings, Target, resolve_api_key, api_key_name
+from .config import MAX_DISCOVERY_SPACES, Settings, Target, resolve_api_key, api_key_name
 from .diagnostics import (Connection, inspect_api, inspect_mcp, check_policy, check_activity,
                           doctor, require_application_name)
 from .setup_backend import NativeCLI, agent_name
@@ -850,10 +850,10 @@ class Wizard:
                 space_id = choices.get('joined_space_id')
                 if space_id:
                     Target(space_id, 'validate')
+                # Managed leaves override this raw profile at runtime, including
+                # discovery and credentials used to report membership coverage.
+                self.store.require_config_ownership()
                 if mode == 'cli':
-                    # Managed leaves override the raw profile at runtime; native
-                    # membership must never act on a shadowed connection.
-                    self.store.require_config_ownership()
                     await self.verify_native_join_connection(record, extra, choices, saved_join)
                     if saved_join and saved_join.get('choices', {}).get('discovery_action') != action:
                         raise SetupError('join_choices', 'Resume the original discovery action for this invitation.')
@@ -903,6 +903,29 @@ class Wizard:
                             raise SetupError('account_mismatch', 'The joined space resolves to a different account; migration is separate.')
                         await client.request('GET', '/v2/spaces/' + quote(space_id, safe='') + '/chats', params={'ids': 'full', 'include': 'discussions'})
                         await client.request('GET', '/v2/spaces/' + quote(space_id, safe='') + '/members', params={'ids': 'full'})
+                        # Membership alone needs no new setup candidate when the
+                        # current credential and discovery policy already cover it.
+                        join_only = {'schema_version', 'mode', 'discovery_action', 'joined_space_id',
+                                     'invitation_ref', 'join_space'}
+                        if action == 'retain' and settings.discovery_all_spaces and choices.keys() <= join_only:
+                            from .diagnostics import check_member_write
+                            check_member_write(me)
+                            if grant['permission'] != 'readwrite':
+                                raise SetupError('write_required', 'Gateway replies require a read/write API grant.')
+                            schema = await client.request('GET', '/v2/docs/openapi.json')
+                            live = 'get' in schema.get('paths', {}).get('/v2/spaces/stream', {})
+                            if mode == 'cli':
+                                record.pop('join_attempt', None)
+                                self.store.save(record)
+                            if not live and len(spaces) > MAX_DISCOVERY_SPACES:
+                                return outcome('needs_input', changed=bool(join_attempt and join_attempt.get('changed')),
+                                    membership='usable', space_id=space_id, gateway='startup-only space limit exceeded',
+                                    next_action='Narrow the grant to 16 spaces or upgrade Heart before restarting the gateway.')
+                            return outcome('ready' if live else 'restart_required',
+                                changed=bool(join_attempt and join_attempt.get('changed')), membership='usable', space_id=space_id,
+                                next_action=None if live else 'Restart the gateway to discover the joined space.', gateway=(
+                                    'joined; covered by live space discovery' if live else
+                                    'joined; restart the gateway for startup-only space discovery'))
                 finally:
                     await client.close()
                 if not visible:
@@ -961,7 +984,7 @@ class Wizard:
             result['membership'] = 'usable' if visible else 'joined_grant_refresh_required'
             if result.get('publication') == 'prepared':
                 result['gateway'] = 'joined; gateway restart required'
-            result['chat_enrollment'] = 'After startup discovery, mention/creator/pin rules still determine watched chats.'
+            result['chat_enrollment'] = 'Mention/creator/pin rules determine watched chats in the space.'
             return result
         except SetupError as error:
             return outcome(error.state, changed=bool(join_attempt and join_attempt.get('changed')), error=error, next_action=error.next_action)

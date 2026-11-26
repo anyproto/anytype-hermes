@@ -114,3 +114,20 @@ def test_payload_bounds_and_secret_redaction_preserve_identity_and_terminal_stat
     assert body['data']['tool_call_id'] == 'unique' and body['data']['status'] == 'complete'
     assert body['data']['result']['truncated'] is True
     assert data['api_key'] == data['Authorization'] == data['nested']['password'] == '[redacted]'
+
+
+async def test_retired_space_drops_late_tool_callbacks_without_delaying_other_spaces():
+    paths = []
+    def http(request):
+        paths.append(request.url.path)
+        return httpx.Response(403 if '/one/' in request.url.path else 200, json={})
+    p = publisher(http)
+    old = p.run(Target('one', 'chat'))
+    old.start('c', 'lookup', {})
+    await eventually(lambda: paths)
+    p.retire_space('one')
+    old.complete('c', 'lookup', {}, {})
+    await p.typing(Target('two', 'chat'))
+    await p.close()
+    await p.client.close()
+    assert paths == ['/v2/spaces/one/chats/chat/status', '/v2/spaces/two/chats/chat/status']

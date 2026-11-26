@@ -50,9 +50,9 @@ class Binding:
             log.debug('Anytype tool activity update failed', exc_info=True)
 
     def close(self):
-        self.publisher.loop.call_soon_threadsafe(self._close)
+        self.publisher.loop.call_soon_threadsafe(self.retire)
 
-    def _close(self):
+    def retire(self):
         self.closed = True
         for run in self.runs.values():
             run.close()

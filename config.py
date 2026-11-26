@@ -5,6 +5,9 @@ import re
 from urllib.parse import urlsplit
 
 
+MAX_DISCOVERY_SPACES = 16
+
+
 def api_key_name(extra):
     """An explicit selector is authoritative, including when its value is missing."""
     name = extra.get('api_key_env', 'ANYTYPE_API_KEY')
@@ -80,6 +83,13 @@ class Settings:
     def spaces(self):
         return tuple(dict.fromkeys(([self.discovery_space] if self.discovery_space else []) +
                                    [t.space_id for t in self.targets]))
+
+    def watcher_spaces(self, visible, home_chat=None, current=()):
+        """Reserve slots for home and pinned chats, then retain existing listeners."""
+        home = (Target.parse(home_chat).space_id,) if home_chat else ()
+        candidates = dict.fromkeys((*home, *self.spaces, *current, *sorted(visible)))
+        visible = set(visible)
+        return tuple(s for s in candidates if s in visible)[:MAX_DISCOVERY_SPACES]
 
     @classmethod
     def load(cls, extra):

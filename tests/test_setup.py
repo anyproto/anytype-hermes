@@ -293,3 +293,41 @@ def test_journal_save_rechecks_mutated_choices_and_existing_mcp_fields(isolated_
     with pytest.raises(SetupError):
         store.save(record)
     assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize('live', [False, True])
+async def test_join_retaining_visible_multispace_needs_no_publication(isolated_home, live):
+    api = FakeAPI(spaces=('space.full', 'other.full'))
+    if live:
+        api.schema['paths']['/v2/spaces/stream'] = {'get': {'operationId': 'stream_spaces'}}
+    wizard = Wizard(isolated_home, interactive=False, api_transport=api.transport, lifecycle=FakeLifecycle(running=(False,)))
+    assert (await wizard.run(choices(activation='save_stopped')))['state'] == 'saved'
+    before = (isolated_home / 'config.yaml').read_bytes()
+    result = await wizard.join({'joined_space_id': 'other.full', 'discovery_action': 'retain'})
+    assert result['state'] == ('ready' if live else 'restart_required'), result
+    assert bool(result['next_action']) is not live
+    assert ('live space discovery' if live else 'restart the gateway') in result['gateway']
+    assert (isolated_home / 'config.yaml').read_bytes() == before
+
+
+async def test_legacy_retain_beyond_capacity_preserves_membership_outcome(isolated_home):
+    api = FakeAPI()
+    wizard = Wizard(isolated_home, interactive=False, api_transport=api.transport, lifecycle=FakeLifecycle(running=(False,)))
+    assert (await wizard.run(choices(activation='save_stopped')))['state'] == 'saved'
+    api.spaces = ('space.full', *(f'extra-{i}' for i in range(16)))
+    result = await wizard.join({'joined_space_id': 'extra-15', 'discovery_action': 'retain'})
+    assert result['membership'] == 'usable' and result['state'] == 'needs_input'
+    assert 'Narrow the grant' in result['next_action']
+
+
+async def test_desktop_join_respects_managed_discovery_override(isolated_home, monkeypatch):
+    api = FakeAPI(spaces=('space.full', 'other.full'))
+    wizard = Wizard(isolated_home, interactive=False, api_transport=api.transport, lifecycle=FakeLifecycle(running=(False,)))
+    assert (await wizard.run(choices(activation='save_stopped')))['state'] == 'saved'
+    managed = isolated_home.parent / 'managed'
+    managed.mkdir()
+    (managed / 'config.yaml').write_text(json.dumps({'gateway': {'platforms': {'anytype': {
+        'extra': {'discovery': {'space_id': 'space.full'}}}}}}))
+    monkeypatch.setenv('HERMES_MANAGED_DIR', str(managed))
+    result = await wizard.join({'joined_space_id': 'other.full', 'discovery_action': 'retain'})
+    assert result['error']['type'] == 'managed_config', result

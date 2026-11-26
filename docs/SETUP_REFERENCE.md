@@ -340,8 +340,8 @@ may grant both the old and new spaces while gateway discovery switches to the
 new one, or discovers all spaces in that named grant. An all-space
 grant already covers later spaces. Intended discovery changes prepare a candidate
 through the same publication protocol; deferred activation reports **joined;
-gateway restart required**. Startup discovers spaces, while individual chats
-still need mention/creator/pin enrollment. `response: all` applies to authorized
+gateway restart required**. With the spaces stream, a running gateway follows additions and removals covered by
+its current multi-space policy and grant. Individual chats still need mention/creator/pin enrollment. `response: all` applies to authorized
 messages in watched chats.
 
 Scheduled `deliver="anytype"` targets the configured home. Jobs from another space

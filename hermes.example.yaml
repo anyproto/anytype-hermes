@@ -27,7 +27,7 @@ gateway:
         # Setup stages fresh ANYTYPE_API_KEY_SETUP_<id> names before publication.
         api_key_env: "ANYTYPE_API_KEY"
         # Optional. Requires Heart go-0000-search-stream (both subscription routes).
-        # List accessible spaces once at startup. Restart after joining/granting another space.
+        # Follow visible spaces as the account joins or leaves and its API grant changes.
         discovery:
           spaces: "all"
           # Or replace spaces: all with space_id: "<full-space-id>" for one space.
