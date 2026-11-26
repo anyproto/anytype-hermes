@@ -135,13 +135,37 @@ class ActivityPublisher:
         self.client, self.secrets = client, secrets
         self.loop = asyncio.get_running_loop()
         self.interval, self.terminal_retry_seconds = interval, terminal_retry_seconds
-        self.calls, self.tasks, self.labels = {}, set(), {}
+        self.calls, self.tasks, self.labels = {}, {}, {}
+        self.runs = {}
+        self.target_backoff = {}
         self.typing_started = {}
         self.closed = False
         self.unavailable_until = 0.0
 
     def run(self, target):
-        return ActivityRun(self, target)
+        run = ActivityRun(self, target)
+        self.runs[run.id] = target
+        return run
+
+    def _spawn(self, target, coro):
+        task = asyncio.create_task(coro)
+        self.tasks[task] = target
+        task.add_done_callback(self.tasks.pop)
+
+    def retire_space(self, space):
+        for run_id, target in list(self.runs.items()):
+            if target.space_id == space:
+                self.runs.pop(run_id)
+        for task, target in list(self.tasks.items()):
+            if target.space_id == space:
+                task.cancel()
+        for cache in (self.labels, self.typing_started, self.target_backoff):
+            for key in list(cache):
+                if key.startswith(space + '/'):
+                    del cache[key]
+        for execution, call in list(self.calls.items()):
+            if call.target.space_id == space:
+                self.calls.pop(execution)
 
     def submit(self, target, run_id, execution, name, args, status, result=_MISSING, *, label=None):
         args = clean(args if isinstance(args, dict) else {}, self.secrets)
@@ -162,7 +186,7 @@ class ActivityPublisher:
         self.loop.call_soon_threadsafe(self._update, target, run_id, execution, payload)
 
     def _update(self, target, run_id, execution, payload):
-        if self.closed:
+        if self.closed or run_id not in self.runs:
             return
         call = self.calls.get(execution)
         if call is not None and call.terminal_at is not None:
@@ -170,9 +194,7 @@ class ActivityPublisher:
         if call is None:
             call = Call(target, run_id, payload)
             self.calls[execution] = call
-            task = asyncio.create_task(self._publish_call(execution, call))
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
+            self._spawn(target, self._publish_call(execution, call))
         call.payload = payload
         call.revision += 1
         if payload['data']['status'] != 'in_progress':
@@ -182,9 +204,7 @@ class ActivityPublisher:
     def set_text(self, target, text):
         if not self.closed:
             self.labels[target.key] = bounded_payload(clean(text, self.secrets))['text']
-            task = asyncio.create_task(self._post(target, bounded_payload(self.labels[target.key])))
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
+            self._spawn(target, self._post(target, bounded_payload(self.labels[target.key])))
 
     async def typing(self, target, text=None):
         if self.closed:
@@ -208,7 +228,7 @@ class ActivityPublisher:
         # Blank text means Typing. Stop refreshing and let the transient label expire.
 
     async def _post(self, target, payload):
-        if time.monotonic() < self.unavailable_until:
+        if time.monotonic() < max(self.unavailable_until, self.target_backoff.get(target.key, 0)):
             return False
         try:
             await self.client.publish_status(target, payload)
@@ -217,7 +237,11 @@ class ActivityPublisher:
             delay = error.retry_after if error.retry_after is not None else self.interval
             if error.status in {401, 403, 404}:
                 delay = 30
-            self.unavailable_until = time.monotonic() + max(self.interval, delay)
+            until = time.monotonic() + max(self.interval, delay)
+            if error.status in {403, 404}:
+                self.target_backoff[target.key] = until
+            else:
+                self.unavailable_until = until
             log.warning('Anytype activity publication failed: HTTP %s; retry in %.1fs', error.status, delay)
         except (httpx.HTTPError, ValueError) as error:
             log.debug('Anytype activity publication failed: %s', type(error).__name__)
@@ -253,6 +277,7 @@ class ActivityPublisher:
                              bounded_payload(f'{data["tool_name"]}: interrupted', data))
             if call.run_id == run_id:
                 self.stop_typing(call.target)
+        self.runs.pop(run_id, None)
 
     async def close(self):
         for run_id in {c.run_id for c in self.calls.values()}:

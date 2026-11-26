@@ -108,13 +108,27 @@ discovery:
   response: all  # or mentions, including replies to the agent
 ```
 
-`spaces: all` performs one complete paginated `GET /v2/spaces?ids=full` listing at
-gateway startup, then opens independent chat and creator-search streams in each
-accessible space. There is no recurring space-list poll. Joining a space or granting
-the key another space requires a gateway restart. Existing chat/object subscriptions
-continue streaming normally. Space failures and initial snapshots are independent;
-credential rejection suspends all spaces. Heart currently permits 16 space-chat
-and 16 search streams process-wide; more than 16 discovered spaces fails explicitly.
+`spaces: all` subscribes to `GET /v2/spaces/stream?ids=full`. Heart sends the
+spaces visible to this key, then publishes changes as the account joins or leaves
+and as its grant changes. Each added space gets its own chat stream and optional
+creator-search stream. A removal closes both and disables sends to its chats.
+A re-added space resolves its members again and recovers from its saved chat
+checkpoints. A rename leaves the listeners running.
+
+If the spaces stream drops, the gateway pauses per-space listeners until a complete
+new snapshot arrives. An expired or revoked key stops discovery. With older Heart
+builds the gateway logs a warning and lists spaces once at startup. Restart after a
+membership change on those builds. The `spaces_stream` check in
+`hermes anytype doctor --json` reports `ready` or `startup_only`. A stream check shows `at_capacity` when
+Heart has already allocated every slot and the probe could not open its own connection.
+
+The gateway runs up to 16 space watchers. The home space has first priority,
+followed by spaces with pinned chats, then existing listeners. Additional spaces show
+`waiting_for_slot` in `hermes anytype status` and start when a watched space
+leaves. For the current assignment, use `hermes anytype status`; doctor checks
+the configuration as it would start today. Offline history reconciliation uses
+REST and can cover all visible spaces. On older clients, startup-only discovery
+requires a grant of at most 16 spaces.
 
 For the previous single-space behavior, replace `spaces: all` with
 `space_id: "<full-space-id>"`. Configure only one selector. `chats` remains the

@@ -266,3 +266,18 @@ async def test_generic_or_unbound_mcp_cannot_borrow_rest_grant(url, server_name)
         transport=HeartFullMCP(server_name=server_name).transport, api_transport=no_rest)
     assert result['state'] == 'incompatible', result
     assert 'auth_whoami' in result['missing_operations']
+
+
+async def test_live_capacity_reserves_home_and_reports_unprobed_streams():
+    api = FakeAPI(spaces=tuple(f'space{i:02d}' for i in range(17)))
+    api.schema['paths']['/v2/spaces/stream'] = {'get': {'operationId': 'stream_spaces'}}
+    def saturated(request):
+        if request.url.path.endswith('/chats/stream'):
+            return httpx.Response(429, json={'code': 'too_many_streams'})
+        return api.handle(request)
+    connection = await inspect_api(extra(), 'secret', home={'chat_id': 'space16/chat'},
+                                   transport=httpx.MockTransport(saturated))
+    checks = {c['space_id']: c for c in connection.checks if c['name'] == 'space'}
+    assert checks['space15']['state'] == 'waiting_for_slot'
+    assert checks['space16']['chats_stream'] == checks['space16']['state'] == 'at_capacity'
+    assert 'chats_stream' not in checks['space15']

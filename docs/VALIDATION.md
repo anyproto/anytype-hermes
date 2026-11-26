@@ -1,5 +1,16 @@
 # Validation record
 
+## Live space discovery — 2026-11-26
+
+The gateway follows the spaces-stream contract in Heart develop at `0fcf5d1d7`.
+All 341 plugin tests passed on stock Hermes `ec324991` with a mock HTTP
+transport. The suite covers live removal during dispatch and tool execution,
+re-grants, empty startup and restart, partial reconnect snapshots, credential
+expiry, account-lock retries, home chat priority at capacity, offline
+reconciliation, and the startup-only fallback.
+The local client on port 31009 did not advertise `/v2/spaces/stream` during
+validation.
+
 ## Native installation and documentation — 2026-11-11
 
 Hermes `ec3249919accf7bc51f780dcff663e8f19a0e176` installed the repository through

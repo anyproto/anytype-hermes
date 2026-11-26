@@ -1,11 +1,11 @@
 name: anytype-platform
 label: Anytype
 kind: platform
-version: 0.6.0
+version: 0.7.0
 provides_hooks:
   - pre_tool_call
   - post_tool_call
   - post_llm_call
-description: Anytype API v2 multi-space chat and discussion transport, with startup space discovery and creator-based watches.
+description: Anytype API v2 multi-space chat and discussion transport, with live space discovery and creator-based watches.
 # Setup is discoverable before credentials exist. Runtime validates extra.api_key_env
 # (legacy default ANYTYPE_API_KEY) through the owning profile's secret scope.

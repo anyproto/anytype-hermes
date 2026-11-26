@@ -4,6 +4,9 @@ Date: 2026-10-06
 
 Status: architecture recommendation with implemented stages noted below.
 
+2026-11-26 update: multi-space discovery now follows the API v2 spaces stream. See
+[current runtime behavior](OPERATIONS.md#chats-and-spaces).
+
 2026-10-07 update: gateway 0.4 adds the approved single-operator multi-space mode:
 list accessible spaces once at startup, then run independent per-space chat and
 creator-search streams. Restart to discover new spaces; spaces/global-search

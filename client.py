@@ -3,12 +3,15 @@
 import asyncio
 import json
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote
 
 import httpx
+
+from .config import Target
 
 
 class APIError(Exception):
@@ -173,7 +176,7 @@ class Client:
             async for frame in parse_sse(response.aiter_lines()):
                 yield frame
 
-    async def subscription(self, space, *, search=None):
+    def subscription(self, space, *, search=None):
         """Heart subscriptions reconnect with snapshots, never Last-Event-ID.
 
         POST search is a read and must not hold the mutation pacing lock.
@@ -185,8 +188,52 @@ class Client:
             params['include'] = 'discussions'
         else:
             path += '/search/stream'
+        return self._subscription('GET' if search is None else 'POST', path, params, search)
+
+    async def space_sets(self):
+        """Yield complete visible sets. A new connection starts a new snapshot."""
+        visible = set()
+        live = False
+        async with aclosing(self._subscription('GET', '/v2/spaces/stream', {'ids': 'full', 'heartbeat': 30})) as stream:
+            async for frame in stream:
+                if not frame.data:
+                    continue
+                event = event_payload(frame)
+                kind = event['type']
+                if kind == 'stream_closed':
+                    raise APIError(401)
+                if kind == 'snapshot_complete' and not live:
+                    live = True
+                elif kind in {'space_added', 'space_removed'}:
+                    space = event.get('space_id')
+                    if kind == 'space_added':
+                        row = event.get('space')
+                        space = row.get('id') if isinstance(row, dict) else None
+                    try:
+                        Target(space, 'validate')
+                    except ValueError as error:
+                        raise ProtocolError('Invalid space membership event') from error
+                    if kind == 'space_added':
+                        if space in visible:
+                            continue
+                        visible.add(space)
+                    elif live:
+                        if space not in visible:
+                            continue
+                        visible.remove(space)
+                    else:
+                        raise ProtocolError('Removal before space snapshot completed')
+                elif live and kind in {'space_updated', 'not_granted_updated'}:
+                    continue
+                else:
+                    raise ProtocolError('Unexpected spaces stream event')
+                if live:
+                    yield tuple(sorted(visible))
+        raise httpx.ReadError('Spaces stream ended')
+
+    async def _subscription(self, method, path, params, body=None):
         async with self.http.stream(
-            'GET' if search is None else 'POST', path, json=search, params=params,
+            method, path, json=body, params=params,
             timeout=httpx.Timeout(75, connect=10),
         ) as response:
             if response.status_code != 200:

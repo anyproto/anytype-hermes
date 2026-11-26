@@ -51,7 +51,12 @@ class MultiHeart:
         if error:
             return httpx.Response(error)
         if path == '/v2/auth/whoami':
-            data = {}
+            data = {'key': {'id': 'key-fingerprint'}}
+        elif path == '/v2/spaces/stream':
+            assert request.method == 'GET' and request.url.params['ids'] == 'full'
+            assert 'last-event-id' not in request.headers
+            return httpx.Response(200, headers={'Content-Type': 'text/event-stream'},
+                                  stream=LiveStream(self, None, 'spaces'))
         elif path == '/v2/spaces':
             # Force pagination: one listing means all pages exactly once.
             offset = int(request.url.params['offset'])
@@ -90,10 +95,22 @@ class LiveStream(httpx.AsyncByteStream):
             await hold.wait()
         initial = ([h.event(space, 'chat_added', chat=h.row(space))] if kind == 'chats' else
                    [h.event(space, 'object_added', object=o) for o in h.objects[space]])
-        for event in [*initial, h.event(space, 'snapshot_complete')]:
+        if kind == 'spaces':
+            initial = [{'type': 'space_added', 'space': {'id': s}} for s in h.spaces]
+            boundary = {'type': 'snapshot_complete', 'has_not_granted_spaces': False}
+        else:
+            boundary = h.event(space, 'snapshot_complete')
+        for event in initial:
             yield self.encode(event)
+        boundary_gate = h.holds.get((space, kind, 'boundary'))
+        if boundary_gate:
+            await boundary_gate.wait()
+        yield self.encode(boundary)
         while True:
-            yield self.encode(await h.queues[(space, kind)].get())
+            event = await h.queues[(space, kind)].get()
+            if event is None:
+                return
+            yield self.encode(event)
 
     def encode(self, event):
         return ('event: ' + event['type'] + '\ndata: ' + json.dumps(event) + '\n\n').encode()
@@ -174,14 +191,14 @@ async def test_independent_readiness_identity_context_and_same_ids(fleet):
     assert {json.loads(r.content)['filter'] for r in searches} == {
         'creator = "space-a:bot"', 'creator = "space-b:bot"'}
     listings = [r for r in heart.calls if r.url.path == '/v2/spaces']
-    assert [r.url.params['offset'] for r in listings] == ['0', '1']
-    assert all(r.url.params['ids'] == 'full' for r in listings)
+    assert not listings
     await adapter.disconnect()
-    assert heart.closed == {(s, k) for s in heart.spaces for k in ('chats', 'search')}
+    assert heart.closed == {(None, 'spaces')} | {(s, k) for s in heart.spaces for k in ('chats', 'search')}
 
 
 async def test_restart_discovers_new_spaces_and_suspends_removed_destinations(fleet, monkeypatch):
     heart, create = fleet
+    heart.errors['/v2/spaces/stream'] = 404
     adapter = create()
     adapter.set_message_handler(lambda event: None)
     assert await adapter.connect()
@@ -248,7 +265,7 @@ async def test_transient_member_initialization_retries_without_relisting(fleet):
     await asyncio.wait_for(adapter.discovery.for_space('space-a').ready.wait(), 5)
     await asyncio.wait_for(adapter.discovery.for_space('space-b').ready.wait(), 5)
     assert adapter._allowed['space-b'] == {'space-b:alice'}
-    assert len([r for r in heart.calls if r.url.path == '/v2/spaces']) == 2
+    assert not [r for r in heart.calls if r.url.path == '/v2/spaces']
 
 
 async def test_revoked_account_stops_all_spaces_and_closes_subscriptions(fleet):
@@ -261,7 +278,7 @@ async def test_revoked_account_stops_all_spaces_and_closes_subscriptions(fleet):
         await asyncio.wait_for(worker.ready.wait(), 5)
     heart.errors['/v2/spaces/space-b/chats/chat/messages'] = 401
     heart.add('space-b')
-    await eventually(lambda: len(heart.closed) == 4)
+    await eventually(lambda: len(heart.closed) == 5)
     assert not adapter._targets
     assert not (await adapter.send('space-a/chat', 'must not send')).success
 
@@ -281,6 +298,229 @@ async def test_standalone_send_uses_current_startup_scope_and_matching_thread(fl
 async def test_stream_capacity_fails_explicitly_before_partial_watch(fleet):
     heart, create = fleet
     heart.spaces = [f'space-{i}' for i in range(17)]
+    heart.errors['/v2/spaces/stream'] = 404
     adapter = create()
     assert not await adapter.connect()
-    assert not any(r.url.path.endswith('/stream') for r in heart.calls)
+    assert [r.url.path for r in heart.calls if r.url.path.endswith('/stream')] == ['/v2/spaces/stream']
+
+
+async def test_live_add_remove_regrant_and_account_revocation(fleet, monkeypatch):
+    heart, create = fleet
+    adapter = create()
+    received = []
+    async def answer(event):
+        received.append(event.source.scope_id)
+        return 'Answer'
+    adapter.set_message_handler(answer)
+    assert await adapter.connect()
+    queue = heart.queues[(None, 'spaces')]
+    add = {'type': 'space_added', 'space': {'id': 'new'}}
+    queue.put_nowait(add)
+    queue.put_nowait(add)
+    queue.put_nowait({'type': 'space_updated', 'space': {'id': 'new', 'name': 'Renamed'}})
+    await eventually(lambda: 'new' in adapter._me and adapter.discovery.for_space('new').ready.is_set())
+    heart.add('new')
+    await eventually(lambda: received == ['new'])
+    remove = {'type': 'space_removed', 'space_id': 'new', 'reason': 'unavailable'}
+    queue.put_nowait(remove)
+    queue.put_nowait(dict(remove, reason='gone'))
+    await eventually(lambda: ('new', 'search') in heart.closed and ('new', 'chats') in heart.closed)
+    assert 'new' not in adapter.store.discovery_spaces()
+    assert not adapter.store.discovered('new/chat')['available']
+    assert 'new:alice' not in adapter.config.extra['group_allow_from']
+    assert not (await adapter.send('new/chat', 'stale')).success
+    monkeypatch.setattr('anytype_plugin.adapter.Client', lambda *a, **kw:
+                        Client(adapter.settings.base_url, 'test', transport=httpx.MockTransport(heart)))
+    assert not (await standalone_send(adapter.config, 'new/chat', 'stale')).get('success')
+    assert adapter.discovery.for_space('space-a').ready.is_set()
+    queue.put_nowait(add)
+    await eventually(lambda: adapter.discovery.available('new/chat') and adapter.discovery.for_space('new').ready.is_set())
+    heart.add('new', n=2)
+    await eventually(lambda: received == ['new', 'new'])
+    assert len([r for r in heart.calls if r.url.path == '/v2/spaces/new/chats/stream']) == 2
+    queue.put_nowait({'type': 'stream_closed', 'reason': 'key_expired'})
+    await eventually(lambda: not adapter._running and (None, 'spaces') in heart.closed)
+    assert not adapter._targets
+    assert set(adapter.store.discovery_spaces().values()) == {'auth_failed'}
+
+
+async def test_empty_start_and_reconnect_snapshot(fleet):
+    heart, create = fleet
+    heart.spaces = []
+    adapter = create()
+    assert await adapter.connect()
+    queue = heart.queues[(None, 'spaces')]
+    queue.put_nowait({'type': 'space_added', 'space': {'id': 'first'}})
+    await eventually(lambda: adapter.discovery and adapter.discovery.for_space('first').ready.is_set())
+    # Membership changes while disconnected. A partial snapshot cannot enroll.
+    heart.spaces = ['second']
+    gate = heart.holds[(None, 'spaces', 'boundary')] = asyncio.Event()
+    queue.put_nowait(None)
+    await eventually(lambda: not adapter.discovery.workers)
+    await eventually(lambda: len([r for r in heart.calls if r.url.path == '/v2/spaces/stream']) == 2)
+    assert not adapter._members and 'second' not in adapter.discovery.workers
+    gate.set()
+    await eventually(lambda: adapter.discovery.for_space('second') and adapter.discovery.for_space('second').ready.is_set())
+    assert set(adapter.store.discovery_spaces()) == {'second'}
+    assert not adapter.store.discovered('first/chat')['available']
+    assert not any(r.url.path == '/v2/spaces' for r in heart.calls)
+
+
+async def test_slot_opens_for_waiting_space(fleet):
+    heart, create = fleet
+    heart.spaces = [f'space-{i:02}' for i in range(17)]
+    adapter = create()
+    assert await adapter.connect()
+    assert adapter.store.discovery_spaces()['space-16'] == 'waiting_for_slot'
+    assert len(adapter.discovery.workers) == 16
+    heart.queues[(None, 'spaces')].put_nowait({'type': 'space_removed', 'space_id': 'space-00', 'reason': 'gone'})
+    await eventually(lambda: adapter.discovery.for_space('space-16') and adapter.discovery.for_space('space-16').ready.is_set())
+    assert len(adapter.discovery.workers) == 16 and 'space-00' not in adapter._me
+
+
+async def test_revocation_during_parent_lookup_prevents_handoff(fleet, monkeypatch):
+    heart, create = fleet
+    adapter = create()
+    calls = []
+    async def answer(event):
+        calls.append(event.source.scope_id)
+        return 'Answer'
+    adapter.set_message_handler(answer)
+    assert await adapter.connect()
+    worker = adapter.discovery.for_space('space-a')
+    await asyncio.wait_for(worker.ready.wait(), 5)
+    started, release = asyncio.Event(), asyncio.Event()
+    async def slow_parent(target):
+        started.set()
+        await release.wait()
+        return 'old context'
+    monkeypatch.setattr(worker, 'parent_context', slow_parent)
+    heart.add('space-a')
+    await asyncio.wait_for(started.wait(), 5)
+    heart.queues[(None, 'spaces')].put_nowait({'type': 'space_removed', 'space_id': 'space-a', 'reason': 'access_removed'})
+    await eventually(lambda: adapter.discovery.for_space('space-a') is None)
+    release.set()
+    heart.add('space-b')
+    await eventually(lambda: calls == ['space-b'])
+
+
+async def test_empty_restart_retires_saved_chats_and_preserves_first_cutoff(fleet):
+    heart, create = fleet
+    heart.spaces = []
+    first = create()
+    assert await first.connect()
+    from anytype_plugin.cli import local_status
+    assert local_status(first.home / 'anytype' / 'state.sqlite3') == {'status': 'waiting_for_first_space'}
+    since = first._discovery_started
+    await first.disconnect()
+    heart.spaces = ['new']
+    heart.objects['new'] = [{'id': 'parent', 'discussion': 'chat'}]
+    second = create()
+    assert await second.connect()
+    await eventually(lambda: second.discovery.for_space('new').ready.is_set())
+    assert second._discovery_started == since
+    await second.disconnect()
+    heart.spaces = []
+    third = create()
+    assert await third.connect()
+    assert not third.store.discovery_spaces() and not third.store.discovered('new/chat')['available']
+    assert not third.discovery.workers and not third._targets
+    assert not third.store.objects('new')
+    assert 'agent_created_object' not in third.store.discovered('new/chat')['reasons']
+
+
+@pytest.mark.parametrize('empty', [False, True])
+async def test_account_lock_error_remains_retryable(fleet, empty, monkeypatch):
+    heart, create = fleet
+    adapter = create()
+    notified = asyncio.Event()
+    adapter.set_fatal_error_handler(lambda _: notified.set())
+    def locked(*args):
+        adapter._set_fatal_error('anytype_lock', 'held by another gateway', retryable=True)
+        return False
+    monkeypatch.setattr(adapter, '_acquire_platform_lock', locked)
+    if empty:
+        heart.spaces = []
+        assert await adapter.connect()
+        heart.queues[(None, 'spaces')].put_nowait({'type': 'space_added', 'space': {'id': 'new'}})
+        await asyncio.wait_for(notified.wait(), 5)
+    else:
+        assert not await adapter.connect()
+    assert adapter.fatal_error_code == 'anytype_lock' and adapter.fatal_error_retryable
+    assert adapter.fatal_error_message == 'held by another gateway'
+
+
+async def test_new_home_preempts_watcher_and_offline_reconcile_preserves_assignment(fleet):
+    heart, create = fleet
+    heart.spaces = [f'space-{i:02}' for i in range(16)]
+    adapter = create()
+    adapter.config.home_channel = HomeChannel(platform=Platform('anytype'), chat_id='zz-home/chat', name='Home')
+    assert await adapter.connect()
+    heart.spaces.append('zz-home')
+    heart.queues[(None, 'spaces')].put_nowait({'type': 'space_added', 'space': {'id': 'zz-home'}})
+    await eventually(lambda: adapter.discovery.for_space('zz-home') and adapter.discovery.for_space('zz-home').ready.is_set())
+    await eventually(lambda: all(w.ready.is_set() for w in adapter.discovery.workers.values()))
+    health = adapter.store.discovery_spaces()
+    assert health['space-15'] == 'waiting_for_slot' and health['zz-home'] == 'connected'
+    await adapter.disconnect()
+    before = len(heart.calls)
+    offline = create()
+    assert await offline.connect(receive=False)
+    await offline.reconcile(Target('zz-home', 'chat'), deep=True)
+    assert not any(r.url.path.endswith('/stream') for r in heart.calls[before:])
+    assert offline.store.discovery_spaces() == health
+
+
+async def test_regrant_does_not_restore_old_creator_watch(fleet, monkeypatch):
+    heart, create = fleet
+    heart.objects['space-a'] = [{'id': 'parent', 'discussion': 'chat'}]
+    adapter = create()
+    assert await adapter.connect()
+    await eventually(lambda: adapter.discovery.for_space('space-a').ready.is_set())
+    assert adapter.discovery.available('space-a/chat')
+    q = heart.queues[(None, 'spaces')]
+    q.put_nowait({'type': 'space_removed', 'space_id': 'space-a', 'reason': 'access_removed'})
+    await eventually(lambda: 'space-a' not in adapter.discovery.workers)
+    heart.objects['space-a'] = []
+    gate = heart.holds[('space-a', 'search')] = asyncio.Event()
+    q.put_nowait({'type': 'space_added', 'space': {'id': 'space-a'}})
+    await eventually(lambda: adapter.discovery.for_space('space-a') and adapter.discovery.for_space('space-a').chat_ready)
+    assert not adapter.discovery.available('space-a/chat')
+    monkeypatch.setattr('anytype_plugin.adapter.Client', lambda *a, **kw:
+                        Client(adapter.settings.base_url, 'test', transport=httpx.MockTransport(heart)))
+    assert not (await standalone_send(adapter.config, 'space-a/chat', 'stale'))['success']
+    gate.set()
+    await eventually(lambda: adapter.discovery.for_space('space-a').ready.is_set())
+    assert not adapter.discovery.available('space-a/chat')
+
+
+async def test_stale_member_error_during_dispatch_leaves_other_spaces_running(fleet, monkeypatch):
+    from anytype_plugin.client import APIError
+    heart, create = fleet
+    adapter = create()
+    received = []
+    async def answer(event):
+        received.append(event.source.scope_id)
+        return 'Answer'
+    adapter.set_message_handler(answer)
+    assert await adapter.connect()
+    await eventually(lambda: all(w.ready.is_set() for w in adapter.discovery.workers.values()))
+    # The receipt was admitted earlier. Delay the final membership check so
+    # its directory response arrives after removal.
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = adapter._author_allowed
+    async def delayed(target, author):
+        if target.space_id == 'space-a' and asyncio.current_task().get_coro().__name__ == '_dispatch_loop':
+            entered.set()
+            await release.wait()
+            raise APIError(403)
+        return await original(target, author)
+    monkeypatch.setattr(adapter, '_author_allowed', delayed)
+    heart.add('space-a')
+    await asyncio.wait_for(entered.wait(), 5)
+    heart.queues[(None, 'spaces')].put_nowait({'type': 'space_removed', 'space_id': 'space-a', 'reason': 'gone'})
+    await eventually(lambda: 'space-a' not in adapter.discovery.workers)
+    release.set()
+    heart.add('space-b')
+    await eventually(lambda: received == ['space-b'])
+    assert adapter._running
